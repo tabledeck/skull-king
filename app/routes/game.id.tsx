@@ -466,7 +466,7 @@ function ScoreBoard({
   return (
     <Table
       aria-label="Example static collection table"
-      className="w-[500px] my-5"
+      className="w-[95vw] lg:w-[500px] my-5"
       isStriped
     >
       <TableHeader>
