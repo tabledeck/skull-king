@@ -60,7 +60,7 @@ export const getRoundScore = (score: score, roundNumber: number): number => {
   } else if ((score.bid ?? 0) > 0 && deltaTricks === 0) {
     scoreDelta += (score.bid ?? 0) * 20;
   } else {
-    scoreDelta += Math.abs(roundNumber) * -10;
+    scoreDelta += Math.abs(deltaTricks) * -10;
   }
   if (score.blackFourteen) {
     scoreDelta += score.blackFourteen * 20;
