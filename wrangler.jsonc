@@ -13,7 +13,7 @@
     {
       "binding": "D1_DATABASE",
       "database_name": "skull-king",
-      "database_id": "REPLACE_WITH_YOUR_D1_ID",
+      "database_id": "016c24ff-4109-42f0-b77e-548107998b72",
       "migrations_dir": "migrations"
     }
   ],
