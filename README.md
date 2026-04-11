@@ -1,40 +1,43 @@
-# Welcome to Remix!
+# Skull King
 
-- 📖 [Remix docs](https://remix.run/docs)
+A real-time multiplayer trick-taking card game on [tabledeck.us](https://tabledeck.us). Based on the popular pirate-themed card game — bid on how many tricks you'll win each round, then play your cards and score points for accuracy.
+
+## Stack
+
+- [React Router v7](https://reactrouter.com) — full-stack React framework
+- [Cloudflare Workers](https://workers.cloudflare.com) + [Durable Objects](https://developers.cloudflare.com/durable-objects/) — edge compute and real-time WebSocket state
+- [@tabledeck/game-room](https://github.com/nrsundberg/tabledeck-game-room) — shared DO base class, WebSocket hook, and guest-join infrastructure
+- [Prisma](https://www.prisma.io) + [Turso](https://turso.tech) — database
+- [Tailwind CSS](https://tailwindcss.com) — styling
 
 ## Development
 
-Run the dev server:
-
-```shellscript
+```bash
+npm install
 npm run dev
 ```
 
+The dev server runs at `http://localhost:5173`. You'll need a `.dev.vars` file with the required environment variables (Turso DB URL and auth token, etc.).
+
 ## Deployment
 
-First, build your app for production:
-
-```sh
+```bash
 npm run build
+wrangler deploy
 ```
 
-Then run the app in production mode:
+## How the real-time layer works
 
-```sh
-npm start
-```
+Game state lives in a Cloudflare Durable Object (`SkullKingRoomDO`) that extends `BaseGameRoomDO` from `@tabledeck/game-room`. Each game room is a single DO instance identified by the game's nanoid slug.
 
-Now you'll need to pick a host to deploy it to.
+- Players connect via WebSocket on `/game/:gameId/ws`
+- The DO persists state to its built-in KV storage and broadcasts updates to all connected clients
+- Guest identity is stored in a short-lived cookie (`sk_<gameId>`) so players reclaim their seat on reload
 
-### DIY
+See the [@tabledeck/game-room docs](https://github.com/nrsundberg/tabledeck-game-room) for the full architecture.
 
-If you're familiar with deploying Node applications, the built-in Remix app server is production-ready.
+## License
 
-Make sure to deploy the output of `npm run build`
+Copyright © Noah Sundberg. Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
 
-- `build/server`
-- `build/client`
-
-## Styling
-
-This template comes with [Tailwind CSS](https://tailwindcss.com/) already configured for a simple default starting experience. You can use whatever css framework you prefer. See the [Vite docs on css](https://vitejs.dev/guide/features.html#css) for more information.
+You are free to view, fork, and contribute to this code. **Commercial use is not permitted.** This project is part of [tabledeck.us](https://tabledeck.us) — a free, non-commercial platform for online board games.

@@ -21,6 +21,11 @@
       "database_name": "skull-king",
       "database_id": "016c24ff-4109-42f0-b77e-548107998b72",
       "migrations_dir": "migrations"
+    },
+    {
+      "binding": "AUTH_DB",
+      "database_name": "tabledeck-auth",
+      "database_id": "9e3645c4-fc3f-44df-8477-64a47d0637de"
     }
   ],
   "durable_objects": {

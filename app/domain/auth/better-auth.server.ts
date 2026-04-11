@@ -1,6 +1,6 @@
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
-import { getPrisma } from "~/db.server";
+import { getAuthPrisma } from "~/db.server";
 
 const PBKDF2_ITERATIONS = 100_000;
 const PBKDF2_HASH = "SHA-256";
@@ -72,17 +72,25 @@ export function getAuth(context: any) {
     return cachedAuth;
   }
 
-  const db = getPrisma(context);
+  const db = getAuthPrisma(context);
   const isProduction = env.ENVIRONMENT !== "development";
   const secret =
     (env as any).BETTER_AUTH_SECRET ?? process.env.BETTER_AUTH_SECRET;
 
   const auth = betterAuth({
+    baseURL: isProduction ? "https://skull.tabledeck.us" : "http://localhost:3002",
     basePath: "/api/auth",
     secret,
+    trustedOrigins: isProduction
+      ? ["https://tabledeck.us", "https://*.tabledeck.us"]
+      : ["http://localhost:3000", "http://localhost:3002"],
     advanced: {
-      cookiePrefix: "skullking",
+      cookiePrefix: "tabledeck",
       useSecureCookies: isProduction,
+      crossSubDomainCookies: {
+        enabled: isProduction,
+        domain: isProduction ? ".tabledeck.us" : undefined,
+      },
       ...((context as any)?.cloudflare?.ctx
         ? {
             backgroundTasks: {

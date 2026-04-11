@@ -8,6 +8,7 @@ import { z } from "zod";
 const CreateGameSchema = z.object({
   maxPlayers: z.number().int().min(2).max(8).default(4),
   mode: z.enum(["digital", "scorekeeper"]).default("digital"),
+  scoringStyle: z.enum(["single", "distributed"]).default("distributed"),
 });
 
 export async function action({ request, context }: Route.ActionArgs) {
@@ -21,9 +22,10 @@ export async function action({ request, context }: Route.ActionArgs) {
     throw data({ error: "Invalid request" }, { status: 400 });
   }
 
-  const { maxPlayers, mode } = parsed.data;
+  const { maxPlayers, mode, scoringStyle } = parsed.data;
   const gameId = nanoid(6);
   const seed = Math.floor(Math.random() * 2 ** 32);
+  const settings = { seed, maxPlayers, mode, scoringStyle };
 
   const db = getPrisma(context);
   await db.game.create({
@@ -31,7 +33,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       id: gameId,
       mode,
       maxPlayers,
-      settings: JSON.stringify({ seed, maxPlayers, mode }),
+      settings: JSON.stringify(settings),
     },
   });
 
@@ -44,10 +46,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     new Request("http://internal/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        gameId,
-        settings: { seed, maxPlayers, mode },
-      }),
+      body: JSON.stringify({ gameId, settings }),
     }),
   );
 

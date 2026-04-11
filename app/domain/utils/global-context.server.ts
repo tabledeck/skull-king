@@ -1,7 +1,7 @@
 import type { MiddlewareFunction } from "react-router";
 import { createContext } from "react-router";
 import type { UserModel as User } from "~/db/models";
-import { getPrisma } from "~/db.server";
+import { getAuthPrisma } from "~/db.server";
 import { getAuth } from "~/domain/auth/better-auth.server";
 
 export const userContext = createContext<User | null>(null);
@@ -14,7 +14,7 @@ export const globalStorageMiddleware: MiddlewareFunction<Response> = async (
   { request, context },
   next,
 ) => {
-  const db = getPrisma(context);
+  const db = getAuthPrisma(context);
   let user: User | null = null;
 
   try {

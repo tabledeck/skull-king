@@ -1,4 +1,4 @@
-import { nanoid } from "nanoid";
+import { BaseGameRoomDO } from "@tabledeck/game-room/server";
 import {
   initializeGame,
   applyMove,
@@ -12,193 +12,105 @@ import {
 } from "../app/domain/game-logic";
 import { ClientMessage } from "../app/domain/messages";
 
-export class SkullKingRoomDO {
-  private state: DurableObjectState;
-  private env: Env;
-  private gameState: GameState | null = null;
-  private settings: GameSettings | null = null;
-  private nextSequence = 0;
-  private gameId: string | null = null;
+export class SkullKingRoomDO extends BaseGameRoomDO<GameState, GameSettings, Env> {
+  // ── Abstract implementations ─────────────────────────────────────────────
 
-  constructor(state: DurableObjectState, env: Env) {
-    this.state = state;
-    this.env = env;
+  protected initializeState(settings: GameSettings): GameState {
+    return initializeGame(settings);
   }
 
-  async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-
-    // WebSocket upgrade: /ws?seat=N&name=PlayerName
-    if (url.pathname === "/ws" && request.headers.get("Upgrade") === "websocket") {
-      const seatParam = url.searchParams.get("seat");
-      const name = url.searchParams.get("name") ?? "Guest";
-      const seat = seatParam !== null ? parseInt(seatParam) : -1;
-
-      const pair = new WebSocketPair();
-      const [client, server] = Object.values(pair);
-
-      // Store seat and name as tags for hibernation
-      this.state.acceptWebSocket(server, [String(seat), name]);
-
-      await this.ensureState();
-
-      // Send current state to connecting player
-      if (this.gameState) {
-        const hand = seat >= 0 ? (this.gameState.hands[seat] ?? []) : [];
-        server.send(
-          JSON.stringify({
-            type: "game_state",
-            state: serializeGameState(this.gameState),
-            yourHand: hand,
-          }),
-        );
-      }
-
-      return new Response(null, { status: 101, webSocket: client });
-    }
-
-    // Initialize game: POST /create
-    if (url.pathname === "/create" && request.method === "POST") {
-      const body = (await request.json()) as {
-        settings: GameSettings;
-        gameId: string;
-      };
-      this.settings = body.settings;
-      this.gameId = body.gameId;
-      this.gameState = initializeGame(body.settings);
-      await this.persistState();
-      return new Response(JSON.stringify({ ok: true }));
-    }
-
-    // Get state: GET /state
-    if (url.pathname === "/state" && request.method === "GET") {
-      await this.ensureState();
-      if (!this.gameState) {
-        return new Response("Not found", { status: 404 });
-      }
-      return new Response(
-        JSON.stringify({
-          state: serializeGameState(this.gameState),
-          settings: this.settings,
-        }),
-        { headers: { "Content-Type": "application/json" } },
-      );
-    }
-
-    return new Response("Not Found", { status: 404 });
+  protected serializeState(state: GameState): Record<string, unknown> {
+    return serializeGameState(state) as unknown as Record<string, unknown>;
   }
 
-  async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
-    if (typeof message !== "string") return;
+  protected deserializeState(data: Record<string, unknown>): GameState {
+    return deserializeGameState(data as any);
+  }
 
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(message);
-    } catch {
-      return;
-    }
+  protected isPlayerSeated(state: GameState, seat: number): boolean {
+    return !!state.players[seat];
+  }
 
-    const result = ClientMessage.safeParse(parsed);
+  protected getPlayerName(state: GameState, seat: number): string | null {
+    return state.players[seat]?.name ?? null;
+  }
+
+  protected seatPlayer(state: GameState, seat: number, name: string): GameState {
+    const newPlayers = [...state.players];
+    newPlayers[seat] = { seat, name, connected: true };
+    return { ...state, players: newPlayers };
+  }
+
+  protected getSeatedCount(state: GameState): number {
+    return state.players.filter(Boolean).length;
+  }
+
+  protected async onAllPlayersSeated(): Promise<void> {
+    // Skull King requires an explicit start_game message — nothing to do here
+  }
+
+  protected async onGameMessage(
+    ws: WebSocket,
+    rawMsg: unknown,
+    seat: number,
+    playerName: string,
+  ): Promise<void> {
+    if (!this.gameState || !this.settings) return;
+
+    const result = ClientMessage.safeParse(rawMsg);
     if (!result.success) {
       ws.send(JSON.stringify({ type: "error", message: "Invalid message" }));
       return;
     }
 
     const msg = result.data;
-    const tags = this.state.getTags(ws);
-    const seat = parseInt(tags[0] ?? "-1");
-    const playerName = tags[1] ?? "Guest";
-
-    await this.ensureState();
-    if (!this.gameState || !this.settings) return;
 
     switch (msg.type) {
-      case "ping":
-        ws.send(JSON.stringify({ type: "pong" }));
-        break;
-
-      case "join_game":
-        await this.handleJoin(ws, seat, msg.name ?? playerName);
-        break;
-
       case "start_game":
         await this.handleStartGame(ws, seat);
         break;
-
       case "bid":
         await this.handleBid(ws, seat, msg.amount);
         break;
-
       case "play_card":
         await this.handlePlayCard(ws, seat, msg.cardId, msg.tigressChoice);
         break;
-
       case "next_round":
         await this.handleNextRound(ws, seat);
         break;
-
+      case "set_player_names":
+        await this.handleSetPlayerNames(ws, seat, msg.names);
+        break;
       case "scorekeeper_bid":
         await this.handleScorekeeperBid(ws, seat, msg.bids);
         break;
-
       case "scorekeeper_result":
         await this.handleScorekeeperResult(ws, seat, msg.won, msg.bonuses);
         break;
-
       case "chat":
-        this.broadcast(
-          JSON.stringify({
-            type: "chat_broadcast",
-            seat,
-            presetId: msg.presetId,
-            playerName: this.gameState.players[seat]?.name ?? playerName,
-          }),
-        );
+        this.broadcast(JSON.stringify({
+          type: "chat_broadcast",
+          seat,
+          presetId: msg.presetId,
+          playerName: this.gameState.players[seat]?.name ?? playerName,
+        }));
         break;
     }
   }
 
-  webSocketClose(ws: WebSocket) {
-    const tags = this.state.getTags(ws);
-    const seat = parseInt(tags[0] ?? "-1");
-    if (seat >= 0 && this.gameState?.players[seat]) {
-      this.gameState.players[seat]!.connected = false;
-      this.broadcast(JSON.stringify({ type: "player_disconnected", seat }));
-    }
-    ws.close();
-  }
-
-  webSocketError(ws: WebSocket) {
-    ws.close();
-  }
-
-  // ─── Handlers ───────────────────────────────────────────────────────────────
-
-  private async handleJoin(ws: WebSocket, seat: number, name: string) {
-    if (!this.gameState || !this.settings) return;
-
-    const availableSeat =
-      seat >= 0 && seat < this.settings.maxPlayers ? seat : this.findOpenSeat();
-    if (availableSeat === -1) {
-      ws.send(JSON.stringify({ type: "error", message: "Game is full" }));
-      return;
-    }
-
-    const joinMove: MoveRecord = {
-      seat: availableSeat,
-      sequence: this.nextSequence++,
-      moveType: "join",
-      data: { type: "join", name },
+  protected getPrivateStateForSeat(seat: number): Record<string, unknown> {
+    return {
+      yourHand: seat >= 0 ? (this.gameState?.hands[seat] ?? []) : [],
     };
-
-    this.gameState = applyMove(this.gameState, joinMove);
-    await this.persistState();
-    await this.persistMoveToDB(joinMove);
-
-    this.broadcast(
-      JSON.stringify({ type: "player_joined", seat: availableSeat, name }),
-    );
   }
+
+  protected onPlayerDisconnected(seat: number): void {
+    if (this.gameState?.players[seat]) {
+      this.gameState.players[seat]!.connected = false;
+    }
+  }
+
+  // ── Game message handlers ────────────────────────────────────────────────
 
   private async handleStartGame(ws: WebSocket, seat: number) {
     if (!this.gameState || !this.settings) return;
@@ -214,10 +126,8 @@ export class SkullKingRoomDO {
     }
 
     if (this.gameState.mode === "scorekeeper") {
-      // Scorekeeper: just start bidding phase
       this.gameState = startScorekeeperRound(this.gameState);
     } else {
-      // Digital: deal cards
       const startMove: MoveRecord = {
         seat,
         sequence: this.nextSequence++,
@@ -230,7 +140,6 @@ export class SkullKingRoomDO {
 
     await this.persistState();
     await this.syncStatusToDB("active");
-
     this.broadcastStateWithPrivateHands("game_state");
   }
 
@@ -256,16 +165,11 @@ export class SkullKingRoomDO {
     await this.persistState();
     await this.persistMoveToDB(bidMove);
 
-    // Check if all bids are in
     const allBid = this.gameState.roundData.every((rd) => rd.bid !== null);
     if (allBid) {
-      // Reveal all bids at once
       const bids = this.gameState.roundData.map((rd) => rd.bid);
-      this.broadcast(
-        JSON.stringify({ type: "bid_reveal", bids, allBids: bids }),
-      );
+      this.broadcast(JSON.stringify({ type: "bid_reveal", bids, allBids: bids }));
     }
-    // Don't reveal individual bids — wait for all
   }
 
   private async handlePlayCard(
@@ -296,9 +200,6 @@ export class SkullKingRoomDO {
       return;
     }
 
-    const prevTrickCount = this.gameState.trickCards.length;
-    const prevPhase = this.gameState.phase;
-
     const playMove: MoveRecord = {
       seat,
       sequence: this.nextSequence++,
@@ -310,49 +211,34 @@ export class SkullKingRoomDO {
     await this.persistState();
     await this.persistMoveToDB(playMove);
 
-    // Broadcast the card played
-    this.broadcast(
-      JSON.stringify({ type: "card_played", seat, cardId, tigressChoice }),
-    );
+    this.broadcast(JSON.stringify({ type: "card_played", seat, cardId, tigressChoice }));
 
-    // If trick just resolved (trickCards reset to empty after being full)
-    const trickComplete = prevTrickCount + 1 === this.gameState.maxPlayers;
+    const trickComplete = this.gameState.trickCards.length === 0 &&
+      this.gameState.phase !== "lobby";
     if (trickComplete) {
-      const rd = this.gameState.roundData;
-      this.broadcast(
-        JSON.stringify({
-          type: "trick_result",
-          winner: this.gameState.leadSeat, // leadSeat is now the trick winner
-          trickCards: [], // already cleared
-          scores: this.gameState.cumulativeScores,
-        }),
-      );
+      this.broadcast(JSON.stringify({
+        type: "trick_result",
+        winner: this.gameState.leadSeat,
+        trickCards: [],
+        scores: this.gameState.cumulativeScores,
+      }));
     }
 
-    // Check if round ended (phase changed to scoring or complete)
     if (this.gameState.phase === "scoring" || this.gameState.phase === "complete") {
-      const deltas = this.gameState.roundData.map((rd, seat) => {
-        const prev = this.gameState!.cumulativeScores[seat];
-        return prev; // cumulative already applied, delta calculation for display
-      });
-      this.broadcast(
-        JSON.stringify({
-          type: "round_score",
-          scores: this.gameState.cumulativeScores,
-          roundData: this.gameState.roundData,
-        }),
-      );
+      this.broadcast(JSON.stringify({
+        type: "round_score",
+        scores: this.gameState.cumulativeScores,
+        roundData: this.gameState.roundData,
+      }));
     }
 
     if (this.gameState.phase === "complete") {
       await this.syncStatusToDB("finished");
-      this.broadcast(
-        JSON.stringify({
-          type: "game_over",
-          finalScores: this.gameState.cumulativeScores,
-          winner: this.gameState.winner,
-        }),
-      );
+      this.broadcast(JSON.stringify({
+        type: "game_over",
+        finalScores: this.gameState.cumulativeScores,
+        winner: this.gameState.winner,
+      }));
     }
   }
 
@@ -373,6 +259,38 @@ export class SkullKingRoomDO {
     this.broadcastStateWithPrivateHands("next_round_ready");
   }
 
+  private async handleSetPlayerNames(ws: WebSocket, seat: number, names: string[]) {
+    if (!this.gameState || !this.settings) return;
+    if (seat !== 0 && seat !== -1) {
+      ws.send(JSON.stringify({ type: "error", message: "Only the host can set player names" }));
+      return;
+    }
+    if (this.gameState.phase !== "lobby") return;
+
+    for (let i = 0; i < Math.min(names.length, this.settings.maxPlayers); i++) {
+      const name = names[i]?.trim();
+      if (!name) continue;
+      const joinMove: MoveRecord = {
+        seat: i,
+        sequence: this.nextSequence++,
+        moveType: "join",
+        data: { type: "join", name },
+      };
+      this.gameState = applyMove(this.gameState, joinMove);
+      await this.persistMoveToDB(joinMove);
+    }
+
+    this.gameState = startScorekeeperRound(this.gameState);
+    await this.persistState();
+    await this.syncStatusToDB("active");
+
+    this.broadcast(JSON.stringify({
+      type: "game_state",
+      state: serializeGameState(this.gameState),
+      yourHand: [],
+    }));
+  }
+
   private async handleScorekeeperBid(ws: WebSocket, seat: number, bids: number[]) {
     if (!this.gameState) return;
     if (this.gameState.mode !== "scorekeeper") return;
@@ -387,20 +305,16 @@ export class SkullKingRoomDO {
     await this.persistState();
     await this.persistMoveToDB(bidMove);
 
-    this.broadcast(
-      JSON.stringify({
-        type: "bid_reveal",
-        bids: this.gameState.roundData.map((rd) => rd.bid),
-        allBids: bids,
-      }),
-    );
-    this.broadcast(
-      JSON.stringify({
-        type: "game_state",
-        state: serializeGameState(this.gameState),
-        yourHand: [],
-      }),
-    );
+    this.broadcast(JSON.stringify({
+      type: "bid_reveal",
+      bids: this.gameState.roundData.map((rd) => rd.bid),
+      allBids: bids,
+    }));
+    this.broadcast(JSON.stringify({
+      type: "game_state",
+      state: serializeGameState(this.gameState),
+      yourHand: [],
+    }));
   }
 
   private async handleScorekeeperResult(
@@ -422,37 +336,23 @@ export class SkullKingRoomDO {
     await this.persistState();
     await this.persistMoveToDB(resultMove);
 
-    this.broadcast(
-      JSON.stringify({
-        type: "round_score",
-        scores: this.gameState.cumulativeScores,
-        roundData: this.gameState.roundData,
-      }),
-    );
+    this.broadcast(JSON.stringify({
+      type: "round_score",
+      scores: this.gameState.cumulativeScores,
+      roundData: this.gameState.roundData,
+    }));
 
     if (this.gameState.phase === "complete") {
       await this.syncStatusToDB("finished");
-      this.broadcast(
-        JSON.stringify({
-          type: "game_over",
-          finalScores: this.gameState.cumulativeScores,
-          winner: this.gameState.winner,
-        }),
-      );
+      this.broadcast(JSON.stringify({
+        type: "game_over",
+        finalScores: this.gameState.cumulativeScores,
+        winner: this.gameState.winner,
+      }));
     }
   }
 
-  // ─── Broadcast helpers ───────────────────────────────────────────────────────
-
-  private broadcast(message: string) {
-    for (const ws of this.state.getWebSockets()) {
-      try {
-        ws.send(message);
-      } catch {
-        // Socket closed
-      }
-    }
-  }
+  // ── Private helpers ──────────────────────────────────────────────────────
 
   private broadcastStateWithPrivateHands(messageType: string) {
     if (!this.gameState) return;
@@ -460,55 +360,16 @@ export class SkullKingRoomDO {
     for (const ws of this.state.getWebSockets()) {
       const tags = this.state.getTags(ws);
       const seat = parseInt(tags[0] ?? "-1");
-      const hand = seat >= 0 ? (this.gameState!.hands[seat] ?? []) : [];
+      const hand = seat >= 0 ? (this.gameState.hands[seat] ?? []) : [];
       try {
-        ws.send(
-          JSON.stringify({
-            type: messageType,
-            state: publicState,
-            yourHand: hand,
-          }),
-        );
+        ws.send(JSON.stringify({ type: messageType, state: publicState, yourHand: hand }));
       } catch {
         // Socket closed
       }
     }
   }
 
-  // ─── Seat helpers ────────────────────────────────────────────────────────────
-
-  private findOpenSeat(): number {
-    if (!this.gameState || !this.settings) return -1;
-    for (let i = 0; i < this.settings.maxPlayers; i++) {
-      if (!this.gameState.players[i]) return i;
-    }
-    return -1;
-  }
-
-  // ─── Persistence ─────────────────────────────────────────────────────────────
-
-  private async ensureState() {
-    if (this.gameState) return;
-
-    const stored = await this.state.storage.get<ReturnType<typeof serializeGameState>>("gameState");
-    const settings = await this.state.storage.get<GameSettings>("settings");
-    const seq = await this.state.storage.get<number>("nextSequence");
-
-    if (stored && settings) {
-      this.gameState = deserializeGameState(stored as any);
-      this.settings = settings;
-      this.nextSequence = seq ?? 0;
-      this.gameId = (await this.state.storage.get<string>("gameId")) ?? null;
-    }
-  }
-
-  private async persistState() {
-    if (!this.gameState) return;
-    await this.state.storage.put("gameState", serializeGameState(this.gameState));
-    await this.state.storage.put("nextSequence", this.nextSequence);
-    if (this.settings) await this.state.storage.put("settings", this.settings);
-    if (this.gameId) await this.state.storage.put("gameId", this.gameId);
-  }
+  // ── Persistence ──────────────────────────────────────────────────────────
 
   private async persistMoveToDB(move: MoveRecord) {
     if (!this.gameId) return;

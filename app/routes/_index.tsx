@@ -6,10 +6,22 @@ import type { GameMode } from "~/domain/game-state";
 
 export function meta() {
   return [
-    { title: "Skull King" },
-    { name: "description", content: "Play Skull King online with friends" },
+    { title: "Skull King Online — Free Multiplayer Trick-Taking Card Game" },
+    { name: "description", content: "Play Skull King online free with 2–8 players. The swashbuckling trick-taking card game by Grandpa Beck's Games. No download — share a link and play instantly." },
+    { property: "og:type", content: "website" },
+    { property: "og:site_name", content: "Tabledeck" },
+    { property: "og:title", content: "Skull King Online — Free Multiplayer Trick-Taking Card Game" },
+    { property: "og:description", content: "Play Skull King online free with 2–8 players. No download — share a link and play instantly." },
+    { property: "og:url", content: "https://skull.tabledeck.us" },
+    { name: "twitter:card", content: "summary" },
+    { name: "twitter:title", content: "Skull King Online — Free Multiplayer Card Game" },
+    { name: "twitter:description", content: "Play Skull King online free with 2–8 players. Share a link and play instantly." },
   ];
 }
+
+export const links: Route.LinksFunction = () => [
+  { rel: "canonical", href: "https://skull.tabledeck.us" },
+];
 
 export async function loader({ context }: Route.LoaderArgs) {
   const user = getOptionalUserFromContext(context);
@@ -22,6 +34,7 @@ export default function Index({ loaderData }: Route.ComponentProps) {
   const [creating, setCreating] = useState(false);
   const [playerCount, setPlayerCount] = useState(4);
   const [gameMode, setGameMode] = useState<GameMode>("digital");
+  const [scoringStyle, setScoringStyle] = useState<"single" | "distributed">("single");
 
   const createGame = async () => {
     setCreating(true);
@@ -29,7 +42,11 @@ export default function Index({ loaderData }: Route.ComponentProps) {
       const res = await fetch("/api/game", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ maxPlayers: playerCount, mode: gameMode }),
+        body: JSON.stringify({
+          maxPlayers: playerCount,
+          mode: gameMode,
+          scoringStyle: gameMode === "scorekeeper" ? scoringStyle : "distributed",
+        }),
       });
       const { gameId } = (await res.json()) as { gameId: string };
       navigate(`/game/${gameId}`);
@@ -41,6 +58,9 @@ export default function Index({ loaderData }: Route.ComponentProps) {
   return (
     <div className="min-h-screen bg-gray-950 flex flex-col items-center justify-center p-4">
       {/* Header */}
+      <a href="https://tabledeck.us" className="absolute top-4 left-4 text-gray-500 hover:text-gray-300 text-sm">
+        ← tabledeck.us
+      </a>
       <div className="absolute top-4 right-4 flex gap-3">
         {user ? (
           <>
@@ -107,6 +127,40 @@ export default function Index({ loaderData }: Route.ComponentProps) {
             : "Physical cards at the table, phones for real-time scoring"}
         </p>
 
+        {/* Scoring style (scorekeeper only) */}
+        {gameMode === "scorekeeper" && (
+          <>
+            <label className="text-gray-400 text-sm block mb-2">Who scores?</label>
+            <div className="flex gap-2 mb-5">
+              <button
+                onClick={() => setScoringStyle("single")}
+                className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
+                  scoringStyle === "single"
+                    ? "bg-amber-600 text-white"
+                    : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+                }`}
+              >
+                One scorer
+              </button>
+              <button
+                onClick={() => setScoringStyle("distributed")}
+                className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
+                  scoringStyle === "distributed"
+                    ? "bg-amber-600 text-white"
+                    : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+                }`}
+              >
+                Everyone scores
+              </button>
+            </div>
+            <p className="text-gray-500 text-xs mb-5 -mt-3">
+              {scoringStyle === "single"
+                ? "Host enters all names and scores for the whole table"
+                : "Each player joins and enters their own bids and results"}
+            </p>
+          </>
+        )}
+
         {/* Player count */}
         <label className="text-gray-400 text-sm block mb-2">Players</label>
         <div className="flex gap-2 mb-6 flex-wrap">
@@ -149,6 +203,22 @@ export default function Index({ loaderData }: Route.ComponentProps) {
           How to play Skull King
         </a>
       </div>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify({
+            "@context": "https://schema.org",
+            "@type": "VideoGame",
+            name: "Skull King",
+            description: "The swashbuckling trick-taking card game — bid your tricks, plunder your enemies, and outwit the Skull King.",
+            url: "https://skull.tabledeck.us",
+            genre: "Card Game",
+            numberOfPlayers: { "@type": "QuantitativeValue", minValue: 2, maxValue: 8 },
+            offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+            publisher: { "@type": "Organization", name: "Tabledeck" },
+          }),
+        }}
+      />
     </div>
   );
 }

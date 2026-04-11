@@ -18,6 +18,7 @@ export interface GameSettings {
   mode: GameMode;
   maxPlayers: number;
   seed: number;
+  scoringStyle?: "single" | "distributed";
 }
 
 // ─── Move types ─────────────────────────────────────────────────────────────

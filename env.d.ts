@@ -5,6 +5,7 @@ export {};
 declare global {
   interface Env {
     D1_DATABASE: D1Database;
+    AUTH_DB: D1Database;
     SKULL_KING_ROOM: DurableObjectNamespace;
     ENVIRONMENT: string;
     BETTER_AUTH_SECRET: string;

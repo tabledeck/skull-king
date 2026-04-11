@@ -1,11 +1,11 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { data, redirect } from "react-router";
+import { data, redirect, useFetcher } from "react-router";
 import type { Route } from "./+types/game.$gameId";
 import { getPrisma } from "~/db.server";
 import { getOptionalUserFromContext } from "~/domain/utils/global-context.server";
 import type { ServerMessage } from "~/domain/messages";
 import { CHAT_PRESETS } from "~/domain/messages";
-import { useGameWebSocket } from "~/hooks/useGameWebSocket";
+import { useGameWebSocket } from "@tabledeck/game-room/client";
 import type { PublicGameState } from "~/domain/game-state";
 import { getCard } from "~/domain/cards";
 import type { Card } from "~/domain/cards";
@@ -30,6 +30,7 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
     seed: number;
     maxPlayers: number;
     mode: string;
+    scoringStyle?: "single" | "distributed";
   };
 
   // Determine this visitor's seat
@@ -57,6 +58,24 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
         await db.gamePlayer.create({
           data: { gameId, userId: user.id, seat: mySeat },
         });
+      }
+    }
+  } else {
+    // Check for a guest session cookie from a previous join
+    const cookieHeader = request.headers.get("Cookie") ?? "";
+    const cookieName = `sk_${gameId}`;
+    const match = cookieHeader
+      .split(";")
+      .map((c) => c.trim())
+      .find((c) => c.startsWith(`${cookieName}=`));
+    if (match) {
+      const [rawSeat, ...nameParts] = match.slice(cookieName.length + 1).split(":");
+      const savedSeat = parseInt(rawSeat, 10);
+      const savedName = decodeURIComponent(nameParts.join(":"));
+      const existing = game.players.find((p) => p.seat === savedSeat && p.guestName === savedName);
+      if (existing) {
+        mySeat = savedSeat;
+        myName = savedName;
       }
     }
   }
@@ -89,6 +108,7 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
     settings,
     gameStatus: game.status,
     gameMode: game.mode,
+    scoringStyle: settings.scoringStyle ?? "distributed",
     maxPlayers: game.maxPlayers,
     dbPlayers: game.players.map((p) => ({
       seat: p.seat,
@@ -108,9 +128,8 @@ export async function action({ params, request, context }: Route.ActionArgs) {
       where: { id: gameId },
       include: { players: true },
     });
-    if (!game || game.status !== "waiting") {
-      throw data({ error: "Cannot join" }, { status: 400 });
-    }
+    if (!game) return data({ error: "Game not found" }, { status: 404 });
+    if (game.status === "finished") return data({ error: "Game is over" }, { status: 400 });
 
     const usedSeats = new Set(game.players.map((p) => p.seat));
     let seat = -1;
@@ -120,15 +139,41 @@ export async function action({ params, request, context }: Route.ActionArgs) {
         break;
       }
     }
-    if (seat === -1) throw data({ error: "Game full" }, { status: 400 });
+    if (seat === -1) return data({ error: "Game is full" }, { status: 400 });
 
     await db.gamePlayer.create({
       data: { gameId, guestName: body.guestName, seat },
     });
-    return data({ seat, name: body.guestName });
+
+    // Notify the DO so it can apply the join and broadcast player_joined to all WS clients
+    try {
+      const env = (context as any).cloudflare?.env as Env | undefined;
+      if (env) {
+        const doId = env.SKULL_KING_ROOM.idFromName(gameId);
+        const stub = env.SKULL_KING_ROOM.get(doId);
+        await stub.fetch(new Request("http://internal/join", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ seat, name: body.guestName }),
+        }));
+      }
+    } catch {
+      // Non-fatal — client will still get state on WS connect
+    }
+
+    const cookieName = `sk_${gameId}`;
+    const cookieValue = `${seat}:${encodeURIComponent(body.guestName)}`;
+    return data(
+      { seat, name: body.guestName },
+      {
+        headers: {
+          "Set-Cookie": `${cookieName}=${cookieValue}; Path=/; Max-Age=86400; SameSite=Lax`,
+        },
+      },
+    );
   }
 
-  throw data({ error: "Unknown action" }, { status: 400 });
+  return data({ error: "Unknown action" }, { status: 400 });
 }
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -160,6 +205,7 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
     settings,
     gameStatus,
     gameMode,
+    scoringStyle,
     maxPlayers,
     dbPlayers,
     doState,
@@ -168,9 +214,11 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
   const [mySeat, setMySeat] = useState(initialSeat);
   const [myName, setMyName] = useState(initialName);
   const [guestName, setGuestName] = useState("");
+  const isSingleScorer = gameMode === "scorekeeper" && scoringStyle === "single";
   const [showNameModal, setShowNameModal] = useState(
-    initialSeat === -1 && gameStatus === "waiting",
+    initialSeat === -1 && gameStatus === "waiting" && !isSingleScorer,
   );
+  const joinFetcher = useFetcher<typeof action>();
 
   // Game state
   const [phase, setPhase] = useState(doState?.phase ?? "lobby");
@@ -215,6 +263,9 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
   const [chatOpen, setChatOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [tigressCardId, setTigressCardId] = useState<number | null>(null);
+  const [singleScorerNames, setSingleScorerNames] = useState<string[]>(
+    Array(maxPlayers).fill(""),
+  );
 
   const joinedRef = useRef(false);
 
@@ -235,7 +286,8 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
     seat: mySeat,
     name: myName,
     onMessage: useCallback(
-      (msg: ServerMessage) => {
+      (rawMsg: unknown) => {
+        const msg = rawMsg as ServerMessage;
         switch (msg.type) {
           case "game_state": {
             const s = msg.state as PublicGameState;
@@ -247,6 +299,24 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
             setCurrentSeat(s.currentSeat);
             setTrickCards(s.trickCards);
             setRoundData(s.roundData.map((rd) => ({ bid: rd.bid, won: rd.won })));
+            if (s.players) {
+              setPlayers(
+                s.players
+                  .map((p, i) =>
+                    p
+                      ? {
+                          seat: i,
+                          name: p.name,
+                          bid: s.roundData[i]?.bid ?? null,
+                          won: s.roundData[i]?.won ?? 0,
+                          score: s.cumulativeScores[i] ?? 0,
+                          connected: p.connected,
+                        }
+                      : null,
+                  )
+                  .filter((p): p is PlayerDisplay => p !== null),
+              );
+            }
             if (msg.yourHand) {
               setMyHand(msg.yourHand as number[]);
               setBidSubmitted(false);
@@ -262,6 +332,24 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
               setCurrentSeat(s.currentSeat);
               setTrickCards([]);
               setRoundData(s.roundData.map((rd) => ({ bid: rd.bid, won: rd.won })));
+              if (s.players) {
+                setPlayers(
+                  s.players
+                    .map((p, i) =>
+                      p
+                        ? {
+                            seat: i,
+                            name: p.name,
+                            bid: null,
+                            won: 0,
+                            score: s.cumulativeScores[i] ?? 0,
+                            connected: p.connected,
+                          }
+                        : null,
+                    )
+                    .filter((p): p is PlayerDisplay => p !== null),
+                );
+              }
             }
             if ((msg as any).yourHand) {
               setMyHand((msg as any).yourHand as number[]);
@@ -354,19 +442,28 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
 
   // ─── Handlers ──────────────────────────────────────────────────────────────
 
-  const handleJoinAsGuest = async () => {
-    if (!guestName.trim()) return;
-    const res = await fetch(`/game/${gameId}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ guestName: guestName.trim() }),
-    });
-    const { seat, name } = (await res.json()) as { seat: number; name: string };
-    setMySeat(seat);
-    setMyName(name);
-    setShowNameModal(false);
-    send({ type: "join_game", name });
+  const handleJoinAsGuest = () => {
+    if (!guestName.trim() || joinFetcher.state !== "idle") return;
+    joinFetcher.submit(
+      { guestName: guestName.trim() },
+      { method: "POST", encType: "application/json" },
+    );
   };
+
+  useEffect(() => {
+    if (joinFetcher.state !== "idle" || !joinFetcher.data) return;
+    const result = joinFetcher.data as { seat?: number; name?: string; error?: string };
+    if (result.seat !== undefined && result.name) {
+      setMySeat(result.seat);
+      setMyName(result.name);
+      setShowNameModal(false);
+      // Optimistically add ourselves to the player list immediately
+      setPlayers((prev) => {
+        if (prev.find((p) => p.seat === result.seat)) return prev;
+        return [...prev, { seat: result.seat!, name: result.name!, bid: null, won: 0, score: 0 }];
+      });
+    }
+  }, [joinFetcher.state, joinFetcher.data]);
 
   const handleStartGame = () => send({ type: "start_game" });
 
@@ -412,6 +509,13 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
     );
   };
 
+  const handleSingleScorerStart = () => {
+    const filledNames = singleScorerNames.map((n, i) => n.trim() || `Player ${i + 1}`);
+    const validCount = singleScorerNames.filter((n) => n.trim()).length;
+    if (validCount < 2) return;
+    send({ type: "set_player_names", names: filledNames });
+  };
+
   const handleCopyLink = () => {
     navigator.clipboard.writeText(shareUrl);
     setCopied(true);
@@ -435,6 +539,11 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
               </a>{" "}
               for a profile.
             </p>
+            {(joinFetcher.data as any)?.error && (
+              <p className="text-red-400 text-sm mb-3">
+                {(joinFetcher.data as any).error}
+              </p>
+            )}
             <input
               autoFocus
               type="text"
@@ -443,14 +552,22 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
               onChange={(e) => setGuestName(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleJoinAsGuest()}
               maxLength={20}
-              className="w-full bg-gray-800 text-white rounded-lg px-4 py-3 outline-none focus:ring-2 focus:ring-amber-500 mb-3"
+              disabled={joinFetcher.state !== "idle"}
+              className="w-full bg-gray-800 text-white rounded-lg px-4 py-3 outline-none focus:ring-2 focus:ring-amber-500 mb-3 disabled:opacity-50"
             />
             <button
               onClick={handleJoinAsGuest}
-              className="w-full bg-amber-600 hover:bg-amber-500 text-white font-semibold rounded-lg px-4 py-3"
+              disabled={joinFetcher.state !== "idle" || !guestName.trim()}
+              className="w-full bg-amber-600 hover:bg-amber-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold rounded-lg px-4 py-3"
             >
-              Board the ship!
+              {joinFetcher.state !== "idle" ? "Boarding…" : "Board the ship!"}
             </button>
+            <a
+              href="/"
+              className="block w-full text-center text-gray-400 hover:text-white text-sm mt-3 py-2"
+            >
+              Cancel
+            </a>
           </div>
         </div>
       )}
@@ -580,8 +697,49 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
         </button>
       </div>
 
-      {/* Lobby */}
-      {phase === "lobby" && (
+      {/* Lobby — single-scorer mode: host enters all names */}
+      {phase === "lobby" && isSingleScorer && (mySeat === 0 || mySeat === -1) && (
+        <div className="bg-gray-900 rounded-xl border border-gray-700 p-5 w-full max-w-2xl">
+          <h2 className="text-white font-semibold mb-1">Enter player names</h2>
+          <p className="text-gray-500 text-xs mb-4">
+            You'll score for everyone at the table
+          </p>
+          <div className="space-y-2 mb-5">
+            {Array.from({ length: maxPlayers }).map((_, i) => (
+              <input
+                key={i}
+                type="text"
+                placeholder={`Player ${i + 1}`}
+                value={singleScorerNames[i] ?? ""}
+                onChange={(e) =>
+                  setSingleScorerNames((prev) =>
+                    prev.map((n, idx) => (idx === i ? e.target.value : n)),
+                  )
+                }
+                maxLength={20}
+                className="w-full bg-gray-800 text-white rounded-lg px-4 py-2.5 outline-none focus:ring-2 focus:ring-amber-500 text-sm"
+              />
+            ))}
+          </div>
+          <button
+            onClick={handleSingleScorerStart}
+            disabled={singleScorerNames.filter((n) => n.trim()).length < 2}
+            className="w-full bg-amber-600 hover:bg-amber-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold rounded-lg py-3"
+          >
+            Start Scoring
+          </button>
+        </div>
+      )}
+
+      {/* Lobby — single-scorer mode: non-host waiting */}
+      {phase === "lobby" && isSingleScorer && mySeat > 0 && (
+        <div className="bg-gray-900 rounded-xl border border-gray-700 p-5 w-full max-w-2xl text-center">
+          <p className="text-gray-400 text-sm">Waiting for host to start the game...</p>
+        </div>
+      )}
+
+      {/* Lobby — distributed mode: players join individually */}
+      {phase === "lobby" && !isSingleScorer && (
         <div className="bg-gray-900 rounded-xl border border-gray-700 p-5 w-full max-w-2xl">
           <h2 className="text-white font-semibold mb-3">
             Waiting for crew ({sortedPlayers.length}/{maxPlayers})
@@ -753,7 +911,7 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
       )}
 
       {/* Scorekeeper mode UI */}
-      {gameMode === "scorekeeper" && phase !== "lobby" && mySeat === 0 && (
+      {gameMode === "scorekeeper" && phase !== "lobby" && (mySeat === 0 || isSingleScorer) && (
         <ScorekeeperPanel
           phase={phase}
           round={round}
@@ -779,7 +937,7 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
       )}
 
       {/* Scorekeeper: non-host view */}
-      {gameMode === "scorekeeper" && phase !== "lobby" && mySeat !== 0 && (
+      {gameMode === "scorekeeper" && phase !== "lobby" && mySeat !== 0 && !isSingleScorer && (
         <div className="w-full max-w-2xl bg-gray-900 rounded-xl border border-gray-700 p-4 text-center">
           <p className="text-gray-400 text-sm">
             {phase === "bidding"

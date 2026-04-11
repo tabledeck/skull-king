@@ -11,6 +11,7 @@
     "typecheck": "react-router typegen && tsc"
   },
   "dependencies": {
+    "@tabledeck/game-room": "^0.1.1",
     "@heroui/react": "^3.0.1",
     "@prisma/adapter-d1": "^7.0.0",
     "@prisma/client": "^7.0.0",

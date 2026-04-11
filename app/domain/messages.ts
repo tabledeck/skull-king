@@ -27,6 +27,12 @@ export const NextRoundMsg = z.object({
 });
 
 // Scorekeeper mode
+// Single-scorer mode: host sets all player names at once
+export const SetPlayerNamesMsg = z.object({
+  type: z.literal("set_player_names"),
+  names: z.array(z.string().min(1).max(20)),
+});
+
 export const ScorekeeperBidMsg = z.object({
   type: z.literal("scorekeeper_bid"),
   bids: z.array(z.number().int().min(0).max(10)),
@@ -62,6 +68,7 @@ export const ClientMessage = z.discriminatedUnion("type", [
   PlayCardMsg,
   StartGameMsg,
   NextRoundMsg,
+  SetPlayerNamesMsg,
   ScorekeeperBidMsg,
   ScorekeeperResultMsg,
   ChatMsg,

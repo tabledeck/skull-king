@@ -19,3 +19,22 @@ export function getPrisma(context: any): PrismaClient {
   cachedD1 = d1;
   return cachedPrisma;
 }
+
+let cachedAuthPrisma: PrismaClient | null = null;
+let cachedAuthD1: unknown = null;
+
+export function getAuthPrisma(context: any): PrismaClient {
+  if (!context?.cloudflare?.env?.AUTH_DB) {
+    throw new Error(
+      "getAuthPrisma: AUTH_DB binding not found. Run via `wrangler dev` or check your Cloudflare environment.",
+    );
+  }
+  const d1 = context.cloudflare.env.AUTH_DB;
+  if (cachedAuthPrisma && cachedAuthD1 === d1) {
+    return cachedAuthPrisma;
+  }
+  const adapter = new PrismaD1(d1);
+  cachedAuthPrisma = new PrismaClient({ adapter });
+  cachedAuthD1 = d1;
+  return cachedAuthPrisma;
+}
