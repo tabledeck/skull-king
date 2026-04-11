@@ -1,36 +1,21 @@
-/* eslint-disable no-var */
-/* eslint-disable @typescript-eslint/no-explicit-any */
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient } from "./db/client";
+import { PrismaD1 } from "@prisma/adapter-d1";
 
-function buildClient() {
-  const client = new PrismaClient();
+let cachedPrisma: PrismaClient | null = null;
+let cachedD1: unknown = null;
 
-  return client;
-}
-
-/**
- * The type of the PrismaClient with extensions
- */
-export type PrismaClientType = ReturnType<typeof buildClient>;
-
-let prisma: PrismaClientType;
-
-declare global {
-  var __prisma: PrismaClientType | undefined;
-}
-
-// This is needed because in development we don't want to restart
-// the server with every change, but we want to make sure we don't
-// create a new connection to the DB with every change either.
-if (process.env.NODE_ENV === "production") {
-  prisma = buildClient();
-  prisma.$connect();
-} else {
-  if (!global.__prisma) {
-    global.__prisma = buildClient();
-    global.__prisma.$connect();
+export function getPrisma(context: any): PrismaClient {
+  if (!context?.cloudflare?.env?.D1_DATABASE) {
+    throw new Error(
+      "getPrisma: D1_DATABASE binding not found. Run via `wrangler dev` or check your Cloudflare environment.",
+    );
   }
-  prisma = global.__prisma;
+  const d1 = context.cloudflare.env.D1_DATABASE;
+  if (cachedPrisma && cachedD1 === d1) {
+    return cachedPrisma;
+  }
+  const adapter = new PrismaD1(d1);
+  cachedPrisma = new PrismaClient({ adapter });
+  cachedD1 = d1;
+  return cachedPrisma;
 }
-
-export default prisma;

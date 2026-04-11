@@ -1,0 +1,34 @@
+{
+  "name": "skull-king",
+  "compatibility_date": "2026-03-30",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "./workers/app.ts",
+  "assets": {
+    "directory": "./build/client"
+  },
+  "vars": {
+    "ENVIRONMENT": "production"
+  },
+  "d1_databases": [
+    {
+      "binding": "D1_DATABASE",
+      "database_name": "skull-king",
+      "database_id": "REPLACE_WITH_YOUR_D1_ID",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SKULL_KING_ROOM",
+        "class_name": "SkullKingRoomDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["SkullKingRoomDO"]
+    }
+  ]
+}

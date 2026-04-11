@@ -1,59 +1,85 @@
 import {
-  data,
+  isRouteErrorResponse,
   Links,
   Meta,
+  type MiddlewareFunction,
   Outlet,
   Scripts,
   ScrollRestoration,
+  useRouteError,
 } from "react-router";
-import { NextUIProvider } from "@nextui-org/react";
-import "./tailwind.css";
 import { useEffect } from "react";
 import { getToast } from "remix-toast";
 import { toast as notify, ToastContainer } from "react-toastify";
-import "react-toastify/dist/ReactToastify.css";
-import toastStyles from "react-toastify/dist/ReactToastify.css?url";
-import { Route } from "./+types/root";
+import toastStyles from "react-toastify/ReactToastify.css?url";
+import styles from "./app.css?url";
+import type { Route } from "./+types/root";
+import {
+  globalStorageMiddleware,
+  userContext,
+} from "~/domain/utils/global-context.server";
+
+export const middleware: MiddlewareFunction<Response>[] = [
+  globalStorageMiddleware,
+];
+
+export const meta: Route.MetaFunction = () => [
+  { title: "Skull King" },
+  { name: "description", content: "Play Skull King online with friends" },
+];
 
 export const links: Route.LinksFunction = () => [
-  { rel: "preconnect", href: "https://fonts.googleapis.com" },
-  {
-    rel: "preconnect",
-    href: "https://fonts.gstatic.com",
-    crossOrigin: "anonymous",
-  },
-  {
-    rel: "stylesheet",
-    href: "https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap",
-  },
+  { rel: "stylesheet", href: styles },
   { rel: "stylesheet", href: toastStyles },
 ];
 
-export const loader = async ({ request }: Route.LoaderArgs) => {
-  // Extracts the toast from the request
+export async function loader({ request, context }: Route.LoaderArgs) {
+  const user = context.get(userContext) ?? null;
   const { toast, headers } = await getToast(request);
-  // Important to pass in the headers so the toast is cleared properly
-  return data({ toast: toast }, { headers });
-};
+  return { toast, user } as const;
+}
 
-export function Layout({ children }: { children: React.ReactNode }) {
+export function ErrorBoundary() {
+  const error = useRouteError();
+
+  let title = "Something went wrong";
+  let message = "An unexpected error occurred.";
+  let statusCode: number | null = null;
+
+  if (isRouteErrorResponse(error)) {
+    statusCode = error.status;
+    if (error.status === 404) {
+      title = "Page Not Found";
+      message = "The page you're looking for doesn't exist.";
+    } else {
+      message = error.statusText || message;
+    }
+  } else if (error instanceof Error) {
+    message = error.message;
+  }
+
   return (
-    <html lang="en">
+    <html lang="en" className="dark bg-gray-950">
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Error — Skull King</title>
         <Meta />
         <Links />
       </head>
-      <body>
-        <NextUIProvider>
-          {/* <main className="dark text-foreground bg-background"> */}
-          <ToastContainer stacked position="bottom-right" />
-          {children}
-          <ScrollRestoration />
-          <Scripts />
-          {/* </main> */}
-        </NextUIProvider>
+      <body className="min-h-screen bg-gray-950 text-white flex flex-col items-center justify-center p-4">
+        {statusCode && (
+          <p className="text-amber-400 text-6xl font-bold mb-2">{statusCode}</p>
+        )}
+        <h1 className="text-2xl font-semibold mb-3">{title}</h1>
+        <p className="text-white/60 mb-6 text-center max-w-sm">{message}</p>
+        <a
+          href="/"
+          className="bg-amber-600 text-white font-semibold px-4 py-2 rounded-lg hover:bg-amber-500 transition-colors"
+        >
+          Go Home
+        </a>
+        <Scripts />
       </body>
     </html>
   );
@@ -64,9 +90,24 @@ export default function App({ loaderData }: Route.ComponentProps) {
 
   useEffect(() => {
     if (toast) {
-      notify(toast.message, { type: toast.type });
+      notify(toast.message, { type: toast.type, theme: "dark" });
     }
   }, [toast]);
 
-  return <Outlet />;
+  return (
+    <html lang="en" className="dark bg-gray-950">
+      <head>
+        <meta charSet="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <Meta />
+        <Links />
+      </head>
+      <body className="min-h-screen bg-gray-950 text-white">
+        <ToastContainer />
+        <Outlet />
+        <ScrollRestoration />
+        <Scripts />
+      </body>
+    </html>
+  );
 }

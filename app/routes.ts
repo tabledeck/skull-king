@@ -1,7 +1,14 @@
-import { type RouteConfig, route, index } from "@react-router/dev/routes";
+import { index, route, type RouteConfig } from "@react-router/dev/routes";
 
 export default [
-  index("./routes/_index.tsx"),
-  route("data/gameStatus/:gameId", "./routes/data.gameStatus.gameId.ts"),
-  route("game/:id", "./routes/game.id.tsx"),
+  index("routes/_index.tsx"),
+  route("game/:gameId", "routes/game.$gameId.tsx"),
+
+  // Auth routes
+  route("api/auth/*", "routes/api/auth.ts"),
+  route("api/game", "routes/api/game.ts"),
+  route("login", "routes/auth/login.tsx"),
+  route("signup", "routes/auth/signup.tsx"),
+  route("logout", "routes/auth/logout.ts"),
+  route("profile", "routes/profile.tsx"),
 ] satisfies RouteConfig;
