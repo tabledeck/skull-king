@@ -6,6 +6,12 @@
   "assets": {
     "directory": "./build/client"
   },
+  "routes": [
+    {
+      "pattern": "skull.tabledeck.us",
+      "custom_domain": true
+    }
+  ],
   "vars": {
     "ENVIRONMENT": "production"
   },
