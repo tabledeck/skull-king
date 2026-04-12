@@ -374,8 +374,12 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
             break;
           }
           case "card_played": {
-            const { seat, cardId, tigressChoice } = msg as any;
+            const { seat, cardId, tigressChoice, currentSeat: nextSeat } = msg as any;
             setTrickCards((prev) => [...prev, { seat, cardId, tigressChoice }]);
+            if (nextSeat !== undefined) setCurrentSeat(nextSeat);
+            if (seat === mySeat) {
+              setMyHand((prev) => prev.filter((id) => id !== cardId));
+            }
             break;
           }
           case "trick_result": {
@@ -482,7 +486,6 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
       }
     }
     send({ type: "play_card", cardId, tigressChoice });
-    setMyHand((prev) => prev.filter((id) => id !== cardId));
     setTigressCardId(null);
   };
 
@@ -910,6 +913,9 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
         </div>
       )}
 
+      {/* Card info reference panel */}
+      {gameMode === "digital" && mySeat >= 0 && <CardInfoPanel />}
+
       {/* Scorekeeper mode UI */}
       {gameMode === "scorekeeper" && phase !== "lobby" && (mySeat === 0 || isSingleScorer) && (
         <ScorekeeperPanel
@@ -1041,6 +1047,56 @@ function CardDisplay({
       <span className="text-gray-400 text-xs text-center leading-tight px-1">
         {card.name ?? card.type}
       </span>
+    </div>
+  );
+}
+
+// ─── Card Info Panel ─────────────────────────────────────────────────────────
+
+function CardInfoPanel() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="w-full max-w-2xl">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-4 py-2 bg-gray-900 border border-gray-700 rounded-xl text-gray-400 hover:text-gray-200 text-xs transition-colors"
+      >
+        <span>Card reference</span>
+        <span>{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div className="bg-gray-900 border border-t-0 border-gray-700 rounded-b-xl px-4 pb-4 pt-3 space-y-4 text-xs text-gray-300">
+          {/* Suits */}
+          <div>
+            <p className="text-gray-500 uppercase tracking-wide mb-2 font-semibold">Suits (1–14)</p>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-1">
+              <span><span className="text-green-400">🦜 Parrots</span> — regular</span>
+              <span><span className="text-blue-400">🗺️ Maps</span> — regular</span>
+              <span><span className="text-yellow-400">📦 Treasure Chests</span> — regular</span>
+              <span><span className="text-gray-200">☠️ Jolly Rogers</span> — <span className="text-amber-400 font-semibold">trump</span> (beats other suits)</span>
+            </div>
+            <p className="text-gray-500 mt-1">Must follow lead suit if you have it. Special cards can always be played.</p>
+          </div>
+          {/* Hierarchy */}
+          <div>
+            <p className="text-gray-500 uppercase tracking-wide mb-2 font-semibold">Who wins the trick</p>
+            <ol className="space-y-1 list-none">
+              <li><span className="text-gray-500 mr-1">1.</span>🧜 <strong>Mermaid</strong> — beats Skull King when both in trick</li>
+              <li><span className="text-gray-500 mr-1">2.</span>💀 <strong>Skull King</strong> — beats all Pirates</li>
+              <li><span className="text-gray-500 mr-1">3.</span>⚔️ <strong>Pirate</strong> (5 cards) — beats all numbered &amp; Mermaids</li>
+              <li><span className="text-gray-500 mr-1">4.</span>🧜 <strong>Mermaid</strong> (2 cards) — beats numbered, loses to Pirates</li>
+              <li><span className="text-gray-500 mr-1">5.</span>☠️ <strong>Jolly Rogers</strong> (trump) — beats other suits</li>
+              <li><span className="text-gray-500 mr-1">6.</span>Highest card of lead suit</li>
+              <li><span className="text-gray-500 mr-1">7.</span>🏳️ <strong>Escape</strong> — always loses</li>
+            </ol>
+          </div>
+          {/* Tigress */}
+          <div>
+            <p className="text-gray-500 uppercase tracking-wide mb-1 font-semibold">Tigress 🐯</p>
+            <p>Choose when played: acts as <strong>Escape</strong> or <strong>Pirate</strong>.</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

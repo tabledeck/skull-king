@@ -211,7 +211,7 @@ export class SkullKingRoomDO extends BaseGameRoomDO<GameState, GameSettings, Env
     await this.persistState();
     await this.persistMoveToDB(playMove);
 
-    this.broadcast(JSON.stringify({ type: "card_played", seat, cardId, tigressChoice }));
+    this.broadcast(JSON.stringify({ type: "card_played", seat, cardId, tigressChoice, currentSeat: this.gameState.currentSeat }));
 
     const trickComplete = this.gameState.trickCards.length === 0 &&
       this.gameState.phase !== "lobby";

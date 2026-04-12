@@ -19,7 +19,9 @@ export default {
       const gameId = wsMatch[1];
       const id = env.SKULL_KING_ROOM.idFromName(gameId);
       const stub = env.SKULL_KING_ROOM.get(id);
-      return stub.fetch(request);
+      const doUrl = new URL(request.url);
+      doUrl.pathname = "/ws";
+      return stub.fetch(new Request(doUrl.toString(), request));
     }
 
     // Bridge Cloudflare env bindings into process.env
