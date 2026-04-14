@@ -90,6 +90,24 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
   const url = new URL(request.url);
   const shareUrl = `${url.protocol}//${url.host}/game/${gameId}`;
 
+  // Notify DO about this seated player — idempotent, safe on every load/reconnect
+  if (mySeat >= 0) {
+    try {
+      const env = (context as any).cloudflare?.env as Env | undefined;
+      if (env) {
+        const doId = env.SKULL_KING_ROOM.idFromName(gameId);
+        const stub = env.SKULL_KING_ROOM.get(doId);
+        await stub.fetch(new Request("http://internal/join", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ seat: mySeat, name: myName }),
+        }));
+      }
+    } catch {
+      // Non-fatal — WS connect will recover via getPrivateStateForSeat
+    }
+  }
+
   // Fetch initial state from Durable Object for SSR
   let doState: PublicGameState | null = null;
   try {
