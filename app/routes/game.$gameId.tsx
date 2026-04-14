@@ -239,6 +239,7 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
     { seat: number; cardId: number; tigressChoice?: string }[]
   >([]);
   const [currentSeat, setCurrentSeat] = useState(0);
+  const [leadSeat, setLeadSeat] = useState(doState?.leadSeat ?? 0);
   const [cumulativeScores, setCumulativeScores] = useState<number[]>(
     Array(maxPlayers).fill(0),
   );
@@ -285,6 +286,7 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
       setRound(doState.round);
       setCumulativeScores(doState.cumulativeScores);
       setCurrentSeat(doState.currentSeat);
+      setLeadSeat(doState.leadSeat);
       setTrickCards(doState.trickCards);
       setRoundData(doState.roundData.map((rd) => ({ bid: rd.bid, won: rd.won })));
     }
@@ -306,6 +308,7 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
             setStatus(s.status);
             setCumulativeScores(s.cumulativeScores);
             setCurrentSeat(s.currentSeat);
+            setLeadSeat(s.leadSeat);
             setTrickCards(s.trickCards);
             setRoundData(s.roundData.map((rd) => ({ bid: rd.bid, won: rd.won })));
             if (s.players) {
@@ -339,6 +342,7 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
               setPhase(s.phase);
               setRound(s.round);
               setCurrentSeat(s.currentSeat);
+              setLeadSeat(s.leadSeat);
               setTrickCards([]);
               setRoundData(s.roundData.map((rd) => ({ bid: rd.bid, won: rd.won })));
               if (s.players) {
@@ -874,9 +878,13 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
       {/* Bidding UI */}
       {phase === "bidding" && mySeat >= 0 && gameMode === "digital" && (
         <div className="w-full max-w-2xl bg-gray-900 rounded-xl border border-gray-700 p-4">
-          <h3 className="text-white font-semibold mb-3">
+          <h3 className="text-white font-semibold mb-1">
             {bidSubmitted ? `You bid ${myBid} — waiting for others...` : "Place your bid"}
           </h3>
+          <p className="text-gray-400 text-xs mb-3">
+            {players.find((p) => p.seat === leadSeat)?.name ?? "?"}
+            {leadSeat === mySeat ? " (you)" : ""} leads this round
+          </p>
           {!bidSubmitted && (
             <div className="flex flex-wrap gap-2">
               {Array.from({ length: round + 1 }, (_, i) => (

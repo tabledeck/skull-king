@@ -20,11 +20,17 @@ export class SkullKingRoomDO extends BaseGameRoomDO<GameState, GameSettings, Env
   }
 
   protected serializeState(state: GameState): Record<string, unknown> {
-    return serializeGameState(state) as unknown as Record<string, unknown>;
+    // serializeGameState strips hands for client transport — add them back for storage
+    return { ...serializeGameState(state), hands: state.hands } as unknown as Record<string, unknown>;
   }
 
   protected deserializeState(data: Record<string, unknown>): GameState {
-    return deserializeGameState(data as any);
+    const base = deserializeGameState(data as any);
+    // Restore hands that were saved alongside the public state
+    if (Array.isArray((data as any).hands)) {
+      base.hands = (data as any).hands as number[][];
+    }
+    return base;
   }
 
   protected isPlayerSeated(state: GameState, seat: number): boolean {
