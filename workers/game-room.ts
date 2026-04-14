@@ -169,6 +169,7 @@ export class SkullKingRoomDO extends BaseGameRoomDO<GameState, GameSettings, Env
     if (allBid) {
       const bids = this.gameState.roundData.map((rd) => rd.bid);
       this.broadcast(JSON.stringify({ type: "bid_reveal", bids, allBids: bids }));
+      this.broadcastStateWithPrivateHands("game_state");
     }
   }
 
