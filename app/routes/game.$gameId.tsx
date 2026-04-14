@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import { toast } from "react-toastify";
 import { data, redirect, useFetcher } from "react-router";
 import type { Route } from "./+types/game.$gameId";
 import { getPrisma } from "~/db.server";
@@ -274,6 +275,8 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
   );
 
   const joinedRef = useRef(false);
+  const mySeatRef = useRef(mySeat);
+  useEffect(() => { mySeatRef.current = mySeat; }, [mySeat]);
 
   // Update from doState on mount
   useEffect(() => {
@@ -383,7 +386,7 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
             const { seat, cardId, tigressChoice, currentSeat: nextSeat } = msg as any;
             setTrickCards((prev) => [...prev, { seat, cardId, tigressChoice }]);
             if (nextSeat !== undefined) setCurrentSeat(nextSeat);
-            if (seat === mySeat) {
+            if (seat === mySeatRef.current) {
               setMyHand((prev) => prev.filter((id) => id !== cardId));
             }
             break;
@@ -434,6 +437,10 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
               ...prev,
               { seat, presetId, playerName, timestamp: Date.now() },
             ]);
+            break;
+          }
+          case "error": {
+            toast.error((msg as any).message, { theme: "dark" });
             break;
           }
         }
