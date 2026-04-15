@@ -5,7 +5,6 @@ import type { Route } from "./+types/game.$gameId";
 import { getPrisma } from "~/db.server";
 import { getOptionalUserFromContext } from "~/domain/utils/global-context.server";
 import type { ServerMessage } from "~/domain/messages";
-import { CHAT_PRESETS } from "~/domain/messages";
 import { useGameWebSocket } from "@tabledeck/game-room/client";
 import type { PublicGameState } from "~/domain/game-state";
 import { getCard } from "~/domain/cards";
@@ -214,7 +213,7 @@ interface PlayerDisplay {
 
 interface ChatMessage {
   seat: number;
-  presetId: number;
+  text: string;
   playerName: string;
   timestamp: number;
 }
@@ -287,6 +286,7 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
   const [showRoundResult, setShowRoundResult] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatOpen, setChatOpen] = useState(false);
+  const [chatInput, setChatInput] = useState("");
   const [copied, setCopied] = useState(false);
   const [tigressCardId, setTigressCardId] = useState<number | null>(null);
   const [singleScorerNames, setSingleScorerNames] = useState<string[]>(
@@ -454,10 +454,10 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
             break;
           }
           case "chat_broadcast": {
-            const { seat, presetId, playerName } = msg as any;
+            const { seat, text, playerName } = msg as any;
             setChatMessages((prev) => [
               ...prev,
-              { seat, presetId, playerName, timestamp: Date.now() },
+              { seat, text, playerName, timestamp: Date.now() },
             ]);
             break;
           }
@@ -995,43 +995,56 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
       {/* Chat */}
       <div className="fixed bottom-4 right-4 z-30">
         {chatOpen && (
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-3 mb-2 w-64 max-h-48 overflow-y-auto">
-            {chatMessages.slice(-10).map((m, i) => (
-              <p key={i} className="text-gray-300 text-xs mb-1">
-                <span className="text-amber-400">{m.playerName}:</span>{" "}
-                {CHAT_PRESETS[m.presetId] ?? "..."}
-              </p>
-            ))}
-            {chatMessages.length === 0 && (
-              <p className="text-gray-600 text-xs italic">No messages yet</p>
-            )}
-          </div>
-        )}
-        {mySeat >= 0 && (
-          <div className="flex flex-col gap-1 items-end">
-            <button
-              onClick={() => setChatOpen((v) => !v)}
-              className="bg-gray-800 hover:bg-gray-700 text-white text-sm rounded-full px-3 py-1.5 border border-gray-600"
-            >
-              💬 {chatMessages.length > 0 && !chatOpen ? chatMessages.length : ""}
-            </button>
-            {chatOpen && (
-              <div className="flex flex-wrap gap-1 justify-end max-w-xs">
-                {CHAT_PRESETS.map((preset, i) => (
-                  <button
-                    key={i}
-                    onClick={() => {
-                      send({ type: "chat", presetId: i });
-                    }}
-                    className="bg-gray-800 hover:bg-amber-700 text-white text-xs rounded-full px-2 py-1"
-                  >
-                    {preset}
-                  </button>
-                ))}
+          <div className="bg-gray-900 border border-gray-700 rounded-xl p-3 mb-2 w-72 flex flex-col gap-2">
+            <div className="max-h-48 overflow-y-auto space-y-1">
+              {chatMessages.slice(-20).map((m, i) => (
+                <p key={i} className="text-gray-300 text-xs">
+                  <span className="text-amber-400">{m.playerName}:</span>{" "}
+                  {m.text}
+                </p>
+              ))}
+              {chatMessages.length === 0 && (
+                <p className="text-gray-600 text-xs italic">No messages yet</p>
+              )}
+            </div>
+            {mySeat >= 0 && (
+              <div className="flex gap-1 border-t border-gray-700 pt-2">
+                <input
+                  type="text"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && chatInput.trim()) {
+                      send({ type: "chat", text: chatInput.trim() });
+                      setChatInput("");
+                    }
+                  }}
+                  placeholder="Type a message..."
+                  maxLength={200}
+                  className="flex-1 bg-gray-800 text-white text-xs rounded-lg px-2 py-1.5 outline-none"
+                />
+                <button
+                  onClick={() => {
+                    if (chatInput.trim()) {
+                      send({ type: "chat", text: chatInput.trim() });
+                      setChatInput("");
+                    }
+                  }}
+                  disabled={!chatInput.trim()}
+                  className="bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white text-xs rounded-lg px-2"
+                >
+                  Send
+                </button>
               </div>
             )}
           </div>
         )}
+        <button
+          onClick={() => setChatOpen((v) => !v)}
+          className="bg-gray-800 hover:bg-gray-700 text-white text-sm rounded-full px-3 py-1.5 border border-gray-600"
+        >
+          💬 {chatMessages.length > 0 && !chatOpen ? chatMessages.length : ""}
+        </button>
       </div>
     </div>
   );

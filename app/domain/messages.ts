@@ -55,7 +55,7 @@ export const ScorekeeperResultMsg = z.object({
 
 export const ChatMsg = z.object({
   type: z.literal("chat"),
-  presetId: z.number().int().min(0),
+  text: z.string().min(1).max(200),
 });
 
 export const PingMsg = z.object({
@@ -91,21 +91,7 @@ export type ServerMessage =
   | { type: "game_over"; finalScores: number[]; winner: number }
   | { type: "player_joined"; seat: number; name: string }
   | { type: "player_disconnected"; seat: number }
-  | { type: "chat_broadcast"; seat: number; presetId: number; playerName: string }
+  | { type: "chat_broadcast"; seat: number; text: string; playerName: string }
   | { type: "error"; message: string }
   | { type: "pong" };
 
-// ─── Chat Presets ─────────────────────────────────────────────────────────────
-
-export const CHAT_PRESETS = [
-  "Yo ho ho!",
-  "Nice trick!",
-  "Walk the plank!",
-  "I'm going for it!",
-  "No mercy!",
-  "Argh!",
-  "Well played!",
-  "You'll regret that!",
-  "The Skull King reigns!",
-  "Shiver me timbers!",
-] as const;
