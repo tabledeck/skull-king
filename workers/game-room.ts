@@ -71,36 +71,41 @@ export class SkullKingRoomDO extends BaseGameRoomDO<GameState, GameSettings, Env
 
     const msg = result.data;
 
-    switch (msg.type) {
-      case "start_game":
-        await this.handleStartGame(ws, seat);
-        break;
-      case "bid":
-        await this.handleBid(ws, seat, msg.amount);
-        break;
-      case "play_card":
-        await this.handlePlayCard(ws, seat, msg.cardId, msg.tigressChoice);
-        break;
-      case "next_round":
-        await this.handleNextRound(ws, seat);
-        break;
-      case "set_player_names":
-        await this.handleSetPlayerNames(ws, seat, msg.names);
-        break;
-      case "scorekeeper_bid":
-        await this.handleScorekeeperBid(ws, seat, msg.bids);
-        break;
-      case "scorekeeper_result":
-        await this.handleScorekeeperResult(ws, seat, msg.won, msg.bonuses);
-        break;
-      case "chat":
-        this.broadcast(JSON.stringify({
-          type: "chat_broadcast",
-          seat,
-          text: msg.text,
-          playerName: this.gameState.players[seat]?.name ?? playerName,
-        }));
-        break;
+    try {
+      switch (msg.type) {
+        case "start_game":
+          await this.handleStartGame(ws, seat);
+          break;
+        case "bid":
+          await this.handleBid(ws, seat, msg.amount);
+          break;
+        case "play_card":
+          await this.handlePlayCard(ws, seat, msg.cardId, msg.tigressChoice);
+          break;
+        case "next_round":
+          await this.handleNextRound(ws, seat);
+          break;
+        case "set_player_names":
+          await this.handleSetPlayerNames(ws, seat, msg.names);
+          break;
+        case "scorekeeper_bid":
+          await this.handleScorekeeperBid(ws, seat, msg.bids);
+          break;
+        case "scorekeeper_result":
+          await this.handleScorekeeperResult(ws, seat, msg.won, msg.bonuses);
+          break;
+        case "chat":
+          this.broadcast(JSON.stringify({
+            type: "chat_broadcast",
+            seat,
+            text: msg.text,
+            playerName: this.gameState.players[seat]?.name ?? playerName,
+          }));
+          break;
+      }
+    } catch (err) {
+      console.error("[skull-king] Unexpected error handling message", msg.type, "for seat", seat, ":", err);
+      ws.send(JSON.stringify({ type: "error", message: "Unexpected server error" }));
     }
   }
 
@@ -396,8 +401,8 @@ export class SkullKingRoomDO extends BaseGameRoomDO<GameState, GameSettings, Env
           JSON.stringify(move.data),
         )
         .run();
-    } catch {
-      // Non-fatal — DO is authoritative
+    } catch (err) {
+      console.error("[skull-king] D1 sync failed (persistMoveToDB):", err);
     }
   }
 
@@ -421,8 +426,8 @@ export class SkullKingRoomDO extends BaseGameRoomDO<GameState, GameSettings, Env
             .run();
         }
       }
-    } catch {
-      // Non-fatal
+    } catch (err) {
+      console.error("[skull-king] D1 sync failed (syncStatusToDB):", err);
     }
   }
 }

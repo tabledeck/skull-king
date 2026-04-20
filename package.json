@@ -8,7 +8,8 @@
     "deploy": "npm run build && wrangler deploy",
     "d1:migrate": "wrangler d1 migrations apply skull-king",
     "d1:create-migration": "wrangler d1 migrations create",
-    "typecheck": "react-router typegen && tsc"
+    "typecheck": "react-router typegen && tsc",
+    "test": "vitest run"
   },
   "dependencies": {
     "@tabledeck/game-room": "^0.1.1",
@@ -48,6 +49,7 @@
     "vite-plugin-babel": "^1.6.0",
     "vite-plugin-devtools-json": "^1.0.0",
     "vite-tsconfig-paths": "^6.1.1",
+    "vitest": "^2.0.0",
     "wrangler": "^4.0.0"
   },
   "engines": {
