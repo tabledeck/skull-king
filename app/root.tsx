@@ -29,6 +29,12 @@ export const meta: Route.MetaFunction = () => [
 ];
 
 export const links: Route.LinksFunction = () => [
+  { rel: "preconnect", href: "https://fonts.googleapis.com" },
+  { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
+  {
+    rel: "stylesheet",
+    href: "https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,500&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;700&family=Caveat:wght@500;600&display=swap",
+  },
   { rel: "stylesheet", href: styles },
   { rel: "stylesheet", href: toastStyles },
 ];
@@ -59,7 +65,7 @@ export function ErrorBoundary() {
   }
 
   return (
-    <html lang="en" className="dark bg-gray-950">
+    <html lang="en" data-theme="skull-king">
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -67,16 +73,13 @@ export function ErrorBoundary() {
         <Meta />
         <Links />
       </head>
-      <body className="min-h-screen bg-gray-950 text-white flex flex-col items-center justify-center p-4">
+      <body className="td-table min-h-screen font-sans flex flex-col items-center justify-center p-4">
         {statusCode && (
-          <p className="text-amber-400 text-6xl font-bold mb-2">{statusCode}</p>
+          <p className="text-gold-hi font-mono text-6xl font-bold mb-2">{statusCode}</p>
         )}
-        <h1 className="text-2xl font-semibold mb-3">{title}</h1>
-        <p className="text-white/60 mb-6 text-center max-w-sm">{message}</p>
-        <a
-          href="/"
-          className="bg-amber-600 text-white font-semibold px-4 py-2 rounded-lg hover:bg-amber-500 transition-colors"
-        >
+        <h1 className="font-serif text-parchment text-2xl font-semibold mb-3">{title}</h1>
+        <p className="text-parchment/60 mb-6 text-center max-w-sm font-sans">{message}</p>
+        <a href="/" className="td-btn-primary">
           Go Home
         </a>
         <Scripts />
@@ -95,14 +98,14 @@ export default function App({ loaderData }: Route.ComponentProps) {
   }, [toast]);
 
   return (
-    <html lang="en" className="dark bg-gray-950">
+    <html lang="en" data-theme="skull-king">
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <Meta />
         <Links />
       </head>
-      <body className="min-h-screen bg-gray-950 text-white">
+      <body className="td-table min-h-screen font-sans">
         <ToastContainer />
         <Outlet />
         <ScrollRestoration />

@@ -2,6 +2,7 @@ import { redirect } from "react-router";
 import type { Route } from "./+types/profile";
 import { getOptionalUserFromContext } from "~/domain/utils/global-context.server";
 import { getPrisma } from "~/db.server";
+import { SkullIcon } from "~/components/icons/skull-king/SkullIcon";
 
 export function meta() {
   return [{ title: "Profile — Skull King" }];
@@ -33,7 +34,6 @@ export async function loader({ context }: Route.LoaderArgs) {
 
   const finishedGames = games.filter((g) => g.status === "finished");
   const wins = finishedGames.filter((g, _i, arr) => {
-    // Win = highest score in the game (approximated by finalScore — full check needs all players)
     return g.finalScore > 0;
   }).length;
 
@@ -51,82 +51,125 @@ export default function Profile({ loaderData }: Route.ComponentProps) {
   const { user, games, stats } = loaderData;
 
   return (
-    <div className="min-h-screen bg-gray-950 p-4">
-      <div className="max-w-lg mx-auto">
+    <div className="td-table min-h-screen p-4">
+      <div style={{ maxWidth: "520px", margin: "0 auto" }}>
         <div className="flex items-center justify-between mb-6 pt-4">
-          <a href="/" className="text-gray-400 hover:text-white text-sm">
+          <a href="/" className="font-sans text-sm" style={{ color: "var(--parchment)", opacity: 0.65 }}>
             ← Home
           </a>
-          <a
-            href="/logout"
-            className="text-gray-500 hover:text-gray-300 text-sm"
-          >
+          <a href="/logout" className="font-sans text-sm" style={{ color: "var(--parchment)", opacity: 0.45 }}>
             Logout
           </a>
         </div>
 
         <div className="text-center mb-8">
-          <div className="text-5xl mb-2">☠️</div>
-          <h1 className="text-2xl font-bold text-white">
+          <div className="mb-3 flex justify-center" style={{ color: "var(--gold)" }}>
+            <SkullIcon size={52} />
+          </div>
+          <h1
+            className="font-serif font-semibold"
+            style={{ fontSize: "26px", color: "var(--parchment)", fontVariant: "small-caps", letterSpacing: "0.08em" }}
+          >
             {user.name || user.email}
           </h1>
-          <p className="text-gray-400 text-sm">{user.email}</p>
+          <p className="font-sans text-sm" style={{ color: "var(--parchment)", opacity: 0.5 }}>
+            {user.email}
+          </p>
         </div>
 
         <div className="flex gap-4 mb-8">
-          <div className="flex-1 bg-gray-900 rounded-xl p-4 text-center border border-gray-800">
-            <p className="text-3xl font-bold text-white">{stats.played}</p>
-            <p className="text-gray-400 text-sm">Games</p>
+          <div
+            className="flex-1 text-center"
+            style={{
+              background: "var(--parchment)",
+              borderRadius: "8px",
+              padding: "16px",
+              boxShadow: "inset 0 0 0 1px rgba(26,22,18,0.12), 0 4px 12px rgba(0,0,0,0.4)",
+            }}
+          >
+            <p className="font-mono font-bold text-3xl" style={{ color: "var(--ink)" }}>{stats.played}</p>
+            <p className="font-serif" style={{ fontVariant: "small-caps", letterSpacing: "0.18em", fontSize: "11px", color: "var(--ink-soft)" }}>Games</p>
           </div>
-          <div className="flex-1 bg-gray-900 rounded-xl p-4 text-center border border-gray-800">
-            <p className="text-3xl font-bold text-white">{stats.finished}</p>
-            <p className="text-gray-400 text-sm">Finished</p>
+          <div
+            className="flex-1 text-center"
+            style={{
+              background: "var(--parchment)",
+              borderRadius: "8px",
+              padding: "16px",
+              boxShadow: "inset 0 0 0 1px rgba(26,22,18,0.12), 0 4px 12px rgba(0,0,0,0.4)",
+            }}
+          >
+            <p className="font-mono font-bold text-3xl" style={{ color: "var(--ink)" }}>{stats.finished}</p>
+            <p className="font-serif" style={{ fontVariant: "small-caps", letterSpacing: "0.18em", fontSize: "11px", color: "var(--ink-soft)" }}>Finished</p>
           </div>
         </div>
 
-        <h2 className="text-white font-semibold mb-3">Recent Games</h2>
+        <h2
+          className="font-serif font-semibold mb-3"
+          style={{ fontVariant: "small-caps", letterSpacing: "0.14em", color: "var(--parchment)", opacity: 0.9 }}
+        >
+          Recent Games
+        </h2>
         {games.length === 0 ? (
-          <p className="text-gray-500 text-sm">No games yet. Go pillage!</p>
+          <p className="font-sans text-sm" style={{ color: "var(--parchment)", opacity: 0.45 }}>
+            No games yet. Go pillage!
+          </p>
         ) : (
           <div className="space-y-2">
             {games.map((g) => (
               <a
                 key={g.gameId}
                 href={`/game/${g.gameId}`}
-                className="flex items-center justify-between bg-gray-900 rounded-xl p-4 border border-gray-800 hover:border-gray-600 transition-colors"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  background: "var(--parchment)",
+                  borderRadius: "6px",
+                  padding: "14px 16px",
+                  boxShadow: "inset 0 0 0 1px rgba(26,22,18,0.12), 0 3px 8px rgba(0,0,0,0.35)",
+                  textDecoration: "none",
+                }}
               >
                 <div>
                   <span
-                    className={`text-xs px-2 py-0.5 rounded-full mr-2 ${
-                      g.mode === "digital"
-                        ? "bg-amber-900 text-amber-300"
-                        : "bg-blue-900 text-blue-300"
-                    }`}
+                    className="font-serif"
+                    style={{
+                      fontVariant: "small-caps",
+                      letterSpacing: "0.14em",
+                      fontSize: "10px",
+                      padding: "2px 8px",
+                      borderRadius: "999px",
+                      marginRight: "8px",
+                      background: g.mode === "digital" ? "var(--navy-mid)" : "var(--forest)",
+                      color: "var(--parchment)",
+                    }}
                   >
                     {g.mode === "digital" ? "Online" : "Score Tracker"}
                   </span>
-                  <span className="text-white text-sm font-medium">
+                  <span className="font-mono" style={{ fontSize: "12px", color: "var(--ink)" }}>
                     {g.gameId}
                   </span>
-                  <p className="text-gray-500 text-xs mt-0.5">
-                    {g.maxPlayers} players ·{" "}
-                    {new Date(g.createdAt).toLocaleDateString()}
+                  <p className="font-sans" style={{ fontSize: "11px", color: "var(--ink-faint)", marginTop: "3px" }}>
+                    {g.maxPlayers} players · {new Date(g.createdAt).toLocaleDateString()}
                   </p>
                 </div>
                 <div className="text-right">
                   <span
-                    className={`text-xs ${
-                      g.status === "finished"
-                        ? "text-green-400"
-                        : g.status === "active"
-                          ? "text-amber-400"
-                          : "text-gray-500"
-                    }`}
+                    className="font-serif"
+                    style={{
+                      fontVariant: "small-caps",
+                      fontSize: "11px",
+                      letterSpacing: "0.1em",
+                      color: g.status === "finished" ? "var(--forest)" : g.status === "active" ? "var(--gold)" : "var(--ink-faint)",
+                    }}
                   >
                     {g.status}
                   </span>
                   {g.finalScore !== 0 && (
-                    <p className="text-white font-bold text-sm">{g.finalScore} pts</p>
+                    <p className="font-mono font-bold" style={{ fontSize: "14px", color: "var(--ink)" }}>
+                      {g.finalScore} pts
+                    </p>
                   )}
                 </div>
               </a>

@@ -9,6 +9,14 @@ import { useGameWebSocket } from "@tabledeck/game-room/client";
 import type { PublicGameState } from "~/domain/game-state";
 import { getCard } from "~/domain/cards";
 import type { Card } from "~/domain/cards";
+import { Scroll } from "~/components/tabledeck/Scroll";
+import { Seal } from "~/components/tabledeck/Seal";
+import { Ticket } from "~/components/tabledeck/Ticket";
+import { BtnPrimary } from "~/components/tabledeck/BtnPrimary";
+import { BtnSecondary } from "~/components/tabledeck/BtnSecondary";
+import { Card as TDCard } from "~/components/tabledeck/Card";
+import { CrownIcon } from "~/components/icons/skull-king/CrownIcon";
+import { ParrotIcon } from "~/components/icons/skull-king/ParrotIcon";
 
 export function meta({ params }: Route.MetaArgs) {
   return [{ title: `Game ${params.gameId} — Skull King` }];
@@ -33,7 +41,6 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
     scoringStyle?: "single" | "distributed";
   };
 
-  // Determine this visitor's seat
   let mySeat = -1;
   let myName = "Guest";
 
@@ -55,7 +62,6 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
       }
       myName = user.name || user.email;
       if (mySeat >= 0) {
-        // Sync user into D1_DATABASE (users live in AUTH_DB; D1 enforces FK constraints)
         await db.user.upsert({
           where: { id: user.id },
           create: { id: user.id, email: user.email, name: user.name || "" },
@@ -67,7 +73,6 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
       }
     }
   } else {
-    // Check for a guest session cookie from a previous join
     const cookieHeader = request.headers.get("Cookie") ?? "";
     const cookieName = `sk_${gameId}`;
     const match = cookieHeader
@@ -89,7 +94,6 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
   const url = new URL(request.url);
   const shareUrl = `${url.protocol}//${url.host}/game/${gameId}`;
 
-  // Notify DO about this seated player — idempotent, safe on every load/reconnect
   if (mySeat >= 0) {
     try {
       const env = (context as any).cloudflare?.env as Env | undefined;
@@ -103,11 +107,10 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
         }));
       }
     } catch {
-      // Non-fatal — WS connect will recover via getPrivateStateForSeat
+      // Non-fatal
     }
   }
 
-  // Fetch initial state from Durable Object for SSR
   let doState: PublicGameState | null = null;
   try {
     const env = (context as any).cloudflare?.env as Env | undefined;
@@ -169,7 +172,6 @@ export async function action({ params, request, context }: Route.ActionArgs) {
       data: { gameId, guestName: body.guestName, seat },
     });
 
-    // Notify the DO so it can apply the join and broadcast player_joined to all WS clients
     try {
       const env = (context as any).cloudflare?.env as Env | undefined;
       if (env) {
@@ -182,7 +184,7 @@ export async function action({ params, request, context }: Route.ActionArgs) {
         }));
       }
     } catch {
-      // Non-fatal — client will still get state on WS connect
+      // Non-fatal
     }
 
     const cookieName = `sk_${gameId}`;
@@ -244,7 +246,6 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
   );
   const joinFetcher = useFetcher<typeof action>();
 
-  // Game state
   const [phase, setPhase] = useState(doState?.phase ?? "lobby");
   const [round, setRound] = useState(doState?.round ?? 0);
   const [status, setStatus] = useState(gameStatus);
@@ -266,7 +267,6 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
   const [winner, setWinner] = useState<number | null>(null);
   const [lastTrickWinner, setLastTrickWinner] = useState<number | null>(null);
 
-  // Scorekeeper mode state
   const [skBids, setSkBids] = useState<number[]>(Array(maxPlayers).fill(0));
   const [skWon, setSkWon] = useState<number[]>(Array(maxPlayers).fill(0));
   const [skBonuses, setSkBonuses] = useState(
@@ -280,7 +280,6 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
     })),
   );
 
-  // UI state
   const [myBid, setMyBid] = useState<number | null>(null);
   const [bidSubmitted, setBidSubmitted] = useState(false);
   const [showRoundResult, setShowRoundResult] = useState(false);
@@ -289,6 +288,10 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
   const [chatInput, setChatInput] = useState("");
   const [copied, setCopied] = useState(false);
   const [tigressCardId, setTigressCardId] = useState<number | null>(null);
+  // Locks the hand after clicking a card so double-clicks can't submit
+  // two play_card messages for a single trick. Cleared when the server
+  // broadcasts our card_played (or the turn moves off us).
+  const [pendingPlayCardId, setPendingPlayCardId] = useState<number | null>(null);
   const [singleScorerNames, setSingleScorerNames] = useState<string[]>(
     Array(maxPlayers).fill(""),
   );
@@ -297,7 +300,6 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
   const mySeatRef = useRef(mySeat);
   useEffect(() => { mySeatRef.current = mySeat; }, [mySeat]);
 
-  // Update from doState on mount
   useEffect(() => {
     if (doState) {
       setPhase(doState.phase);
@@ -332,19 +334,18 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
             if (s.players) {
               setPlayers(
                 s.players
-                  .map((p, i) =>
+                  .flatMap((p, i): PlayerDisplay[] =>
                     p
-                      ? {
+                      ? [{
                           seat: i,
                           name: p.name,
                           bid: s.roundData[i]?.bid ?? null,
                           won: s.roundData[i]?.won ?? 0,
                           score: s.cumulativeScores[i] ?? 0,
                           connected: p.connected,
-                        }
-                      : null,
-                  )
-                  .filter((p): p is PlayerDisplay => p !== null),
+                        }]
+                      : [],
+                  ),
               );
             }
             if (msg.yourHand) {
@@ -366,19 +367,18 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
               if (s.players) {
                 setPlayers(
                   s.players
-                    .map((p, i) =>
+                    .flatMap((p, i): PlayerDisplay[] =>
                       p
-                        ? {
+                        ? [{
                             seat: i,
                             name: p.name,
                             bid: null,
                             won: 0,
                             score: s.cumulativeScores[i] ?? 0,
                             connected: p.connected,
-                          }
-                        : null,
-                    )
-                    .filter((p): p is PlayerDisplay => p !== null),
+                          }]
+                        : [],
+                    ),
                 );
               }
             }
@@ -410,6 +410,8 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
             if (nextSeat !== undefined) setCurrentSeat(nextSeat);
             if (seat === mySeatRef.current) {
               setMyHand((prev) => prev.filter((id) => id !== cardId));
+              // Our play was accepted — release the hand lock
+              setPendingPlayCardId(null);
             }
             break;
           }
@@ -417,7 +419,6 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
             const { winner: trickWinner, scores } = msg as any;
             setLastTrickWinner(trickWinner);
             if (scores) setCumulativeScores(scores);
-            // Clear trick after short delay
             setTimeout(() => setTrickCards([]), 1500);
             break;
           }
@@ -463,6 +464,8 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
           }
           case "error": {
             toast.error((msg as any).message, { theme: "dark" });
+            // If a play was rejected, release the lock so the user can retry
+            setPendingPlayCardId(null);
             break;
           }
         }
@@ -471,7 +474,6 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
     ),
   });
 
-  // Join on mount
   useEffect(() => {
     if (!joinedRef.current && mySeat >= 0) {
       joinedRef.current = true;
@@ -496,7 +498,6 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
       setMySeat(result.seat);
       setMyName(result.name);
       setShowNameModal(false);
-      // Optimistically add ourselves to the player list immediately
       setPlayers((prev) => {
         if (prev.find((p) => p.seat === result.seat)) return prev;
         return [...prev, { seat: result.seat!, name: result.name!, bid: null, won: 0, score: 0 }];
@@ -505,14 +506,14 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
   }, [joinFetcher.state, joinFetcher.data]);
 
   const handleStartGame = () => send({ type: "start_game" });
-
   const handleBid = (amount: number) => {
     setMyBid(amount);
     setBidSubmitted(true);
     send({ type: "bid", amount });
   };
-
   const handlePlayCard = (cardId: number, tigressChoice?: "escape" | "pirate") => {
+    // Guard against double-submits from rapid clicks
+    if (pendingPlayCardId !== null) return;
     if (tigressChoice === undefined) {
       const card = getCard(cardId);
       if (card.type === "tigress") {
@@ -520,20 +521,15 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
         return;
       }
     }
+    setPendingPlayCardId(cardId);
     send({ type: "play_card", cardId, tigressChoice });
     setTigressCardId(null);
   };
-
   const handleScorekeeperSubmitBids = () => {
     send({ type: "scorekeeper_bid", bids: skBids });
   };
-
   const handleScorekeeperSubmitResult = () => {
-    send({
-      type: "scorekeeper_result",
-      won: skWon,
-      bonuses: skBonuses,
-    });
+    send({ type: "scorekeeper_result", won: skWon, bonuses: skBonuses });
     setSkWon(Array(maxPlayers).fill(0));
     setSkBonuses(
       Array(maxPlayers).fill(null).map(() => ({
@@ -546,14 +542,12 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
       })),
     );
   };
-
   const handleSingleScorerStart = () => {
     const filledNames = singleScorerNames.map((n, i) => n.trim() || `Player ${i + 1}`);
     const validCount = singleScorerNames.filter((n) => n.trim()).length;
     if (validCount < 2) return;
     send({ type: "set_player_names", names: filledNames });
   };
-
   const handleCopyLink = () => {
     navigator.clipboard.writeText(shareUrl);
     setCopied(true);
@@ -562,26 +556,31 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
 
   const isMyTurn = phase === "playing" && currentSeat === mySeat;
   const sortedPlayers = [...players].sort((a, b) => a.seat - b.seat);
+  const leaderSeat = cumulativeScores.indexOf(Math.max(...cumulativeScores));
+
+  // ─── Modals ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="min-h-screen bg-gray-950 flex flex-col items-center p-2 gap-3 pb-20">
-      {/* Guest name modal */}
+    <div className="td-table min-h-screen" style={{ padding: "20px" }}>
+
+      {/* ── Guest name modal ─── */}
       {showNameModal && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-900 rounded-2xl p-6 w-full max-w-sm border border-gray-700">
-            <h2 className="text-white font-bold text-xl mb-1">Join Game</h2>
-            <p className="text-gray-400 text-sm mb-4">
+        <div className="fixed inset-0 flex items-center justify-center z-50 p-4" style={{ background: "rgba(0,0,0,0.7)" }}>
+          <div className="td-auth-card relative">
+            <h2 className="font-serif font-bold text-xl mb-1" style={{ color: "var(--ink)" }}>Join Game</h2>
+            <p className="font-sans text-sm mb-4" style={{ color: "var(--ink-soft)", opacity: 0.75 }}>
               Enter a pirate name to play as guest, or{" "}
-              <a href="/login" className="text-amber-400 hover:underline">
+              <a href="/login" className="underline" style={{ color: "var(--gold-lo)" }}>
                 sign in
               </a>{" "}
               for a profile.
             </p>
             {(joinFetcher.data as any)?.error && (
-              <p className="text-red-400 text-sm mb-3">
+              <p className="text-sm mb-3" style={{ color: "var(--copper)" }}>
                 {(joinFetcher.data as any).error}
               </p>
             )}
+            <label className="td-input-label">Pirate name</label>
             <input
               autoFocus
               type="text"
@@ -591,18 +590,19 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
               onKeyDown={(e) => e.key === "Enter" && handleJoinAsGuest()}
               maxLength={20}
               disabled={joinFetcher.state !== "idle"}
-              className="w-full bg-gray-800 text-white rounded-lg px-4 py-3 outline-none focus:ring-2 focus:ring-amber-500 mb-3 disabled:opacity-50"
+              className="td-input mb-4"
             />
-            <button
+            <BtnPrimary
               onClick={handleJoinAsGuest}
               disabled={joinFetcher.state !== "idle" || !guestName.trim()}
-              className="w-full bg-amber-600 hover:bg-amber-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold rounded-lg px-4 py-3"
+              fullWidth
             >
               {joinFetcher.state !== "idle" ? "Boarding…" : "Board the ship!"}
-            </button>
+            </BtnPrimary>
             <a
               href="/"
-              className="block w-full text-center text-gray-400 hover:text-white text-sm mt-3 py-2"
+              className="block w-full text-center font-sans text-sm mt-3 py-2"
+              style={{ color: "var(--ink-soft)", opacity: 0.65 }}
             >
               Cancel
             </a>
@@ -610,405 +610,561 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
         </div>
       )}
 
-      {/* Tigress choice modal */}
+      {/* ── Tigress choice modal ─── */}
       {tigressCardId !== null && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-900 rounded-2xl p-6 w-full max-w-sm border border-gray-700 text-center">
-            <h2 className="text-white font-bold text-xl mb-2">Tigress</h2>
-            <p className="text-gray-400 text-sm mb-6">
+        <div className="fixed inset-0 flex items-center justify-center z-50 p-4" style={{ background: "rgba(0,0,0,0.7)" }}>
+          <div className="td-auth-card text-center">
+            <h2 className="font-serif font-bold text-xl mb-2" style={{ color: "var(--ink)" }}>Tigress</h2>
+            <p className="font-sans text-sm mb-6" style={{ color: "var(--ink-soft)", opacity: 0.75 }}>
               Play the Tigress as Escape or Pirate?
             </p>
             <div className="flex gap-3">
-              <button
+              <BtnSecondary
                 onClick={() => handlePlayCard(tigressCardId!, "escape")}
-                className="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-semibold rounded-lg py-3"
+                fullWidth
               >
                 Escape
-              </button>
-              <button
+              </BtnSecondary>
+              <BtnPrimary
                 onClick={() => handlePlayCard(tigressCardId!, "pirate")}
-                className="flex-1 bg-amber-600 hover:bg-amber-500 text-white font-semibold rounded-lg py-3"
+                fullWidth
               >
                 Pirate
-              </button>
+              </BtnPrimary>
             </div>
           </div>
         </div>
       )}
 
-      {/* Round result modal */}
+      {/* ── Round result modal ─── */}
       {showRoundResult && phase === "scoring" && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-40 p-4">
-          <div className="bg-gray-900 rounded-2xl p-6 w-full max-w-sm border border-gray-700">
-            <h2 className="text-white font-bold text-xl mb-1 text-center">
-              Round {round} Complete
-            </h2>
-            <div className="space-y-2 mb-6 mt-4">
+        <div className="fixed inset-0 flex items-center justify-center z-40 p-4" style={{ background: "rgba(0,0,0,0.7)" }}>
+          <div className="td-scroll relative" style={{ maxWidth: "380px", width: "100%" }}>
+            <Seal animate />
+            <div className="td-scroll-header">
+              <h2>Round {round} Complete</h2>
+              <div className="td-scroll-rule" />
+            </div>
+            <ul className="td-score-list mb-5 mt-2">
               {sortedPlayers.map((p) => {
-                const rd = roundData[p.seat];
                 const score = cumulativeScores[p.seat] ?? 0;
                 return (
-                  <div key={p.seat} className="flex justify-between text-white">
-                    <span className="text-gray-300">
-                      {p.name}
-                      {p.seat === mySeat ? " (you)" : ""}
-                    </span>
-                    <span className="font-bold">{score} pts</span>
-                  </div>
+                  <li key={p.seat} className={`td-score-row ${p.seat === mySeat ? "td-active" : ""}`}>
+                    <div className="td-player-col">
+                      <span className="td-player-name">
+                        {p.name}{p.seat === mySeat ? " (you)" : ""}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="td-score-val">{score}</span>
+                    </div>
+                  </li>
                 );
               })}
-            </div>
+            </ul>
             {round < 10 ? (
-              <button
+              <BtnPrimary
+                fullWidth
                 onClick={() => {
                   setShowRoundResult(false);
                   send({ type: "next_round" });
                 }}
-                className="w-full bg-amber-600 hover:bg-amber-500 text-white font-semibold rounded-lg py-3"
               >
                 Next Round ({round + 1})
-              </button>
+              </BtnPrimary>
             ) : (
-              <button
+              <BtnSecondary
+                fullWidth
                 onClick={() => setShowRoundResult(false)}
-                className="w-full bg-gray-700 text-white font-semibold rounded-lg py-3"
               >
                 See Final Scores
-              </button>
+              </BtnSecondary>
             )}
           </div>
         </div>
       )}
 
-      {/* Game over modal */}
+      {/* ── Game over modal ─── */}
       {status === "finished" && phase === "complete" && !showRoundResult && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-900 rounded-2xl p-6 w-full max-w-sm border border-gray-700 text-center">
-            <div className="text-5xl mb-2">💀</div>
-            <h2 className="text-white font-bold text-2xl mb-2">Game Over!</h2>
+        <div className="fixed inset-0 flex items-center justify-center z-50 p-4" style={{ background: "rgba(0,0,0,0.7)" }}>
+          <div className="td-scroll relative" style={{ maxWidth: "380px", width: "100%" }}>
+            <Seal animate />
+            <div className="td-scroll-header">
+              <h2>Game Over</h2>
+              <div className="td-scroll-rule" />
+            </div>
             {winner !== null && (
-              <p className="text-amber-400 text-lg mb-4">
+              <p className="font-serif text-lg text-center mb-4 font-semibold" style={{ color: "var(--gold)" }}>
+                <CrownIcon className="inline-block mr-1 align-middle" size={20} />
                 {players.find((p) => p.seat === winner)?.name ?? "Unknown"} wins!
               </p>
             )}
-            <div className="space-y-2 mb-6">
+            <ul className="td-score-list mb-5">
               {sortedPlayers
                 .sort((a, b) => (cumulativeScores[b.seat] ?? 0) - (cumulativeScores[a.seat] ?? 0))
                 .map((p) => (
-                  <div key={p.seat} className="flex justify-between text-white">
-                    <span>
-                      {p.name}
-                      {p.seat === mySeat ? " (you)" : ""}
-                    </span>
-                    <span className="font-bold">{cumulativeScores[p.seat] ?? 0} pts</span>
-                  </div>
+                  <li key={p.seat} className={`td-score-row ${p.seat === mySeat ? "td-active" : ""}`}>
+                    <div className="td-player-col">
+                      <span className="td-player-name">
+                        {p.name}{p.seat === mySeat ? " (you)" : ""}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="td-score-val">{cumulativeScores[p.seat] ?? 0}</span>
+                    </div>
+                  </li>
                 ))}
-            </div>
-            <a
-              href="/"
-              className="block bg-amber-600 hover:bg-amber-500 text-white font-semibold rounded-lg px-4 py-3"
-            >
+            </ul>
+            <a href="/" className="td-btn-primary w-full flex items-center justify-center mt-4">
               New Game
             </a>
           </div>
         </div>
       )}
 
-      {/* Header */}
-      <div className="w-full max-w-2xl flex items-center justify-between pt-2">
-        <a href="/" className="text-gray-400 hover:text-white text-sm">
-          ← Home
-        </a>
-        <div className="text-center">
-          <span className="text-white font-bold">💀 Skull King</span>
+      {/* ═══════════════════════════════════════════
+          MAIN STAGE
+          ═══════════════════════════════════════════ */}
+
+      {/* ── Top bar ─── */}
+      <div className="td-top-bar" style={{ maxWidth: "1400px", margin: "0 auto 0" }}>
+        {/* Wordmark */}
+        <div className="td-wordmark">
+          <svg className="td-insignia" viewBox="0 0 64 64" aria-hidden="true">
+            <defs>
+              <radialGradient id="game-gold-rg" cx="50%" cy="40%" r="55%">
+                <stop offset="0%" stopColor="#e8c872" />
+                <stop offset="55%" stopColor="#c9a24a" />
+                <stop offset="100%" stopColor="#7f5a17" />
+              </radialGradient>
+            </defs>
+            <g stroke="url(#game-gold-rg)" strokeWidth="2.4" strokeLinecap="round" fill="none">
+              <line x1="10" y1="12" x2="54" y2="56" />
+              <line x1="54" y1="12" x2="10" y2="56" />
+              <circle cx="10" cy="12" r="2.5" fill="url(#game-gold-rg)" stroke="none" />
+              <circle cx="54" cy="12" r="2.5" fill="url(#game-gold-rg)" stroke="none" />
+            </g>
+            <path d="M32 18c-10 0-16 7-16 15 0 4 2 7 4 9v4c0 2 1 3 3 3h3v-3h2v3h8v-3h2v3h3c2 0 3-1 3-3v-4c2-2 4-5 4-9 0-8-6-15-16-15z"
+              fill="#f4e9d0" stroke="#1a1612" strokeWidth="1.4" />
+            <circle cx="26" cy="34" r="3.2" fill="#1a1612" />
+            <circle cx="38" cy="34" r="3.2" fill="#1a1612" />
+          </svg>
+          <div>
+            <div className="td-name">Skull King</div>
+            {round > 0 && (
+              <div className="td-sub">Round {round} of 10</div>
+            )}
+          </div>
+        </div>
+
+        {/* Tickets + copy link */}
+        <div style={{ display: "flex", gap: "14px", alignItems: "center" }}>
           {round > 0 && (
-            <span className="text-gray-400 text-sm ml-2">
-              Round {round}/10
-            </span>
+            <>
+              <Ticket label="Round" value={round} dim={`/ 10`} />
+              {phase === "playing" && trickCards.length > 0 && (
+                <Ticket label="Trick" value={trickCards.length} />
+              )}
+            </>
           )}
-        </div>
-        <button
-          onClick={handleCopyLink}
-          className="text-amber-400 hover:text-amber-300 text-sm"
-        >
-          {copied ? "Copied!" : "Invite"}
-        </button>
-      </div>
-
-      {/* Lobby — single-scorer mode: host enters all names */}
-      {phase === "lobby" && isSingleScorer && (mySeat === 0 || mySeat === -1) && (
-        <div className="bg-gray-900 rounded-xl border border-gray-700 p-5 w-full max-w-2xl">
-          <h2 className="text-white font-semibold mb-1">Enter player names</h2>
-          <p className="text-gray-500 text-xs mb-4">
-            You'll score for everyone at the table
-          </p>
-          <div className="space-y-2 mb-5">
-            {Array.from({ length: maxPlayers }).map((_, i) => (
-              <input
-                key={i}
-                type="text"
-                placeholder={`Player ${i + 1}`}
-                value={singleScorerNames[i] ?? ""}
-                onChange={(e) =>
-                  setSingleScorerNames((prev) =>
-                    prev.map((n, idx) => (idx === i ? e.target.value : n)),
-                  )
-                }
-                maxLength={20}
-                className="w-full bg-gray-800 text-white rounded-lg px-4 py-2.5 outline-none focus:ring-2 focus:ring-amber-500 text-sm"
-              />
-            ))}
-          </div>
-          <button
-            onClick={handleSingleScorerStart}
-            disabled={singleScorerNames.filter((n) => n.trim()).length < 2}
-            className="w-full bg-amber-600 hover:bg-amber-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold rounded-lg py-3"
-          >
-            Start Scoring
-          </button>
-        </div>
-      )}
-
-      {/* Lobby — single-scorer mode: non-host waiting */}
-      {phase === "lobby" && isSingleScorer && mySeat > 0 && (
-        <div className="bg-gray-900 rounded-xl border border-gray-700 p-5 w-full max-w-2xl text-center">
-          <p className="text-gray-400 text-sm">Waiting for host to start the game...</p>
-        </div>
-      )}
-
-      {/* Lobby — distributed mode: players join individually */}
-      {phase === "lobby" && !isSingleScorer && (
-        <div className="bg-gray-900 rounded-xl border border-gray-700 p-5 w-full max-w-2xl">
-          <h2 className="text-white font-semibold mb-3">
-            Waiting for crew ({sortedPlayers.length}/{maxPlayers})
-          </h2>
-          <div className="space-y-2 mb-4">
-            {sortedPlayers.map((p) => (
-              <div key={p.seat} className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full bg-green-400" />
-                <span className="text-white text-sm">
-                  {p.name}
-                  {p.seat === mySeat ? " (you)" : ""}
-                </span>
-              </div>
-            ))}
-            {Array.from({ length: maxPlayers - sortedPlayers.length }).map((_, i) => (
-              <div key={i} className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full bg-gray-600" />
-                <span className="text-gray-600 text-sm italic">Waiting...</span>
-              </div>
-            ))}
-          </div>
           <button
             onClick={handleCopyLink}
-            className="w-full bg-gray-800 hover:bg-gray-700 text-amber-400 font-medium rounded-lg py-2 text-sm mb-3"
+            className="td-btn-secondary"
+            style={{ marginTop: 0, padding: "7px 14px", fontSize: "11px" }}
           >
-            {copied ? "Copied!" : "Copy invite link"}
+            {copied ? "Copied!" : "Invite"}
           </button>
-          {mySeat === 0 && sortedPlayers.length >= 2 && (
-            <button
-              onClick={handleStartGame}
-              className="w-full bg-amber-600 hover:bg-amber-500 text-white font-semibold rounded-lg py-3"
-            >
-              Start Game ({sortedPlayers.length} players)
-            </button>
-          )}
-          {mySeat === 0 && sortedPlayers.length < 2 && (
-            <p className="text-gray-500 text-sm text-center">
-              Need at least 2 players to start
-            </p>
-          )}
         </div>
-      )}
+      </div>
 
-      {/* Score board (always visible when active) */}
-      {phase !== "lobby" && (
-        <div className="w-full max-w-2xl bg-gray-900 rounded-xl border border-gray-700 p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-white font-semibold text-sm">Scoreboard</h3>
-            {phase === "bidding" && (
-              <span className="text-amber-400 text-xs">Bidding...</span>
+      {/* ── 3-column stage (lobby collapses to 1 col) ─── */}
+      {phase !== "lobby" ? (
+        <div className="td-stage">
+
+          {/* LEFT: Scoreboard ledger */}
+          <aside className="td-scroll" style={{ position: "relative" }}>
+            <Seal />
+            <div className="td-scroll-header">
+              <h2>Ledger</h2>
+              <div className="td-scroll-rule" />
+            </div>
+
+            <ul className="td-score-list">
+              {sortedPlayers.map((p) => {
+                const rd = roundData[p.seat];
+                const isActive = p.seat === currentSeat && phase === "playing";
+                const isLeader = p.seat === leaderSeat && players.length > 0;
+                return (
+                  <li
+                    key={p.seat}
+                    className={`td-score-row ${p.seat === mySeat ? "td-active" : ""} ${isActive ? "td-active-pulse" : ""}`}
+                  >
+                    <div className="td-player-col">
+                      <span className="td-player-name">
+                        {isLeader && (
+                          <CrownIcon className="td-crown-mark" />
+                        )}
+                        {p.name}
+                        {p.seat === mySeat ? " ✦" : ""}
+                      </span>
+                      <span className="td-trick-bid">
+                        Bid <span className="td-mono">{rd?.bid !== null && rd?.bid !== undefined ? rd.bid : "–"}</span>
+                        {" · "}
+                        Won <span className="td-mono">{rd?.won ?? 0}</span>
+                      </span>
+                    </div>
+                    <div>
+                      <span className="td-score-val">{cumulativeScores[p.seat] ?? 0}</span>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+
+            {phase === "playing" && isMyTurn && (
+              <BtnPrimary fullWidth onClick={() => {}}>
+                <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 12l6 6L20 6" stroke="currentColor" strokeWidth="3" fill="none" strokeLinecap="round" />
+                </svg>
+                Your Turn
+              </BtnPrimary>
             )}
-            {phase === "playing" && (
-              <span className="text-green-400 text-xs">
-                {players.find((p) => p.seat === currentSeat)?.name ?? "?"}&apos;s turn
+          </aside>
+
+          {/* CENTER: Play surface */}
+          <section className="td-table-center t-felt">
+            {/* Phase banner */}
+            <div className="td-phase-banner">
+              <span className="td-phase-chip">
+                {phase === "bidding" && "Bidding Phase"}
+                {phase === "playing" && "Playing"}
+                {phase === "scoring" && "Scoring"}
+                {phase === "complete" && "Game Over"}
               </span>
-            )}
-          </div>
-          <div className="grid grid-cols-4 text-xs text-gray-500 mb-1 px-1">
-            <span>Player</span>
-            <span className="text-center">Bid</span>
-            <span className="text-center">Won</span>
-            <span className="text-right">Score</span>
-          </div>
-          {sortedPlayers.map((p) => {
-            const rd = roundData[p.seat];
-            return (
-              <div
-                key={p.seat}
-                className={`grid grid-cols-4 py-1.5 px-1 rounded text-sm ${
-                  p.seat === mySeat ? "bg-gray-800" : ""
-                } ${p.seat === currentSeat && phase === "playing" ? "ring-1 ring-amber-500" : ""}`}
-              >
-                <span className="text-white truncate">{p.name}</span>
-                <span className="text-center text-gray-300">
-                  {rd?.bid !== null && rd?.bid !== undefined ? rd.bid : "–"}
+              {phase === "playing" && (
+                <span className="td-phase-sub">
+                  {isMyTurn
+                    ? "Your turn — play a card from your hand"
+                    : `Awaiting ${players.find((p) => p.seat === currentSeat)?.name ?? "..."}`}
                 </span>
-                <span className="text-center text-gray-300">{rd?.won ?? 0}</span>
-                <span className="text-right font-bold text-white">
-                  {cumulativeScores[p.seat] ?? 0}
+              )}
+              {phase === "bidding" && (
+                <span className="td-phase-sub">
+                  {bidSubmitted ? `You bid ${myBid} — waiting for others...` : "Predict the tricks you will take"}
+                </span>
+              )}
+            </div>
+
+            {/* Trick pile */}
+            {gameMode === "digital" && phase === "playing" && (
+              <>
+                {lastTrickWinner !== null && trickCards.length === 0 && (
+                  <div className="flex justify-center mb-3">
+                    <span className="td-awaiting">
+                      {players.find((p) => p.seat === lastTrickWinner)?.name ?? "?"} won the trick!
+                    </span>
+                  </div>
+                )}
+                {trickCards.length > 0 && (
+                  <>
+                    <div className="td-trick-label">— The Trick —</div>
+                    <div className="td-trick-pile">
+                      {trickCards.map((tc, i) => {
+                        const card = getCard(tc.cardId);
+                        const playerName = players.find((p) => p.seat === tc.seat)?.name ?? "?";
+                        const rot = (i - Math.floor(trickCards.length / 2)) * 5;
+                        return (
+                          <div
+                            key={i}
+                            className="td-trick-slot"
+                            style={{ "--r": `${rot}deg` } as React.CSSProperties}
+                          >
+                            <span className="td-stamp">{playerName}</span>
+                            <CardDisplay
+                              card={card}
+                              tigressChoice={tc.tigressChoice as any}
+                              rotation={rot}
+                              played
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+                {trickCards.length === 0 && lastTrickWinner === null && (
+                  <div className="flex justify-center items-center" style={{ minHeight: "180px" }}>
+                    <span className="td-sc">Waiting for cards…</span>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Awaiting turn */}
+            {phase === "playing" && !isMyTurn && (
+              <div className="flex justify-center mt-4">
+                <span className="td-awaiting">
+                  Awaiting{" "}
+                  <em style={{ fontStyle: "italic", color: "var(--parchment)" }}>
+                    {players.find((p) => p.seat === currentSeat)?.name ?? "..."}
+                  </em>
                 </span>
               </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Trick area (digital mode, playing phase) */}
-      {gameMode === "digital" && phase === "playing" && (
-        <div className="w-full max-w-2xl bg-gray-900 rounded-xl border border-gray-700 p-4">
-          <h3 className="text-white font-semibold text-sm mb-3">Current Trick</h3>
-          {lastTrickWinner !== null && trickCards.length === 0 && (
-            <p className="text-amber-400 text-sm text-center mb-2">
-              {players.find((p) => p.seat === lastTrickWinner)?.name ?? "?"} won the trick!
-            </p>
-          )}
-          <div className="flex flex-wrap gap-2 min-h-[4rem] items-center justify-center">
-            {trickCards.map((tc, i) => {
-              const card = getCard(tc.cardId);
-              const playerName = players.find((p) => p.seat === tc.seat)?.name ?? "?";
-              return (
-                <div key={i} className="text-center">
-                  <CardDisplay card={card} tigressChoice={tc.tigressChoice as any} />
-                  <p className="text-gray-400 text-xs mt-1">{playerName}</p>
-                </div>
-              );
-            })}
-            {trickCards.length === 0 && (
-              <p className="text-gray-600 text-sm">
-                {isMyTurn ? "Your turn — play a card" : "Waiting for cards..."}
-              </p>
             )}
-          </div>
-        </div>
-      )}
 
-      {/* Bidding UI */}
-      {phase === "bidding" && mySeat >= 0 && gameMode === "digital" && (
-        <div className="w-full max-w-2xl bg-gray-900 rounded-xl border border-gray-700 p-4">
-          <h3 className="text-white font-semibold mb-1">
-            {bidSubmitted ? `You bid ${myBid} — waiting for others...` : "Place your bid"}
-          </h3>
-          <p className="text-gray-400 text-xs mb-3">
-            {players.find((p) => p.seat === leadSeat)?.name ?? "?"}
-            {leadSeat === mySeat ? " (you)" : ""} leads this round
-          </p>
-          {!bidSubmitted && (
-            <div className="flex flex-wrap gap-2">
-              {Array.from({ length: round + 1 }, (_, i) => (
-                <button
-                  key={i}
-                  onClick={() => handleBid(i)}
-                  className="bg-gray-800 hover:bg-amber-600 text-white font-bold w-12 h-12 rounded-lg transition-colors"
-                >
-                  {i}
-                </button>
-              ))}
+            {/* Scorekeeper non-host waiting */}
+            {gameMode === "scorekeeper" && mySeat !== 0 && !isSingleScorer && (
+              <div className="flex justify-center items-center" style={{ minHeight: "200px" }}>
+                <span className="td-sc">
+                  {phase === "bidding"
+                    ? "Waiting for host to enter bids…"
+                    : "Waiting for host to enter round results…"}
+                </span>
+              </div>
+            )}
+          </section>
+
+          {/* RIGHT: Bid tracker or info */}
+          <aside className="td-scroll">
+            {gameMode === "digital" && phase === "bidding" && mySeat >= 0 && (
+              <>
+                <div className="td-scroll-header">
+                  <h2>Your Bid</h2>
+                  <div className="td-scroll-rule" />
+                </div>
+                <p className="td-sc mb-3" style={{ color: "var(--ink-soft)" }}>
+                  Predict the tricks you will take.
+                </p>
+                {!bidSubmitted ? (
+                  <>
+                    <div className="td-bid-grid-wrap">
+                      <div className="td-bid-grid">
+                        {Array.from({ length: round + 1 }, (_, i) => (
+                          <button
+                            key={i}
+                            onClick={() => handleBid(i)}
+                            className={`td-bid-chip ${myBid === i ? "td-selected" : ""}`}
+                          >
+                            {i}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="td-bid-flavor">"Your fate, sealed in ink…"</div>
+                  </>
+                ) : (
+                  <div className="td-bid-flavor">
+                    Bid locked: {myBid}<br />
+                    <span className="td-sc">Awaiting all pirates…</span>
+                  </div>
+                )}
+              </>
+            )}
+
+            {gameMode === "digital" && phase === "playing" && (
+              <>
+                <div className="td-scroll-header">
+                  <h2>This Round</h2>
+                  <div className="td-scroll-rule" />
+                </div>
+                {mySeat >= 0 && (
+                  <div style={{ borderTop: "1px dashed rgba(26,22,18,0.2)", borderBottom: "1px dashed rgba(26,22,18,0.2)", padding: "10px 0", display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                    <span className="font-serif font-semibold" style={{ color: "var(--ink)" }}>Tricks won</span>
+                    <span className="font-mono font-bold" style={{ fontSize: "20px", color: "var(--ink)" }}>
+                      {roundData[mySeat]?.won ?? 0} / {roundData[mySeat]?.bid ?? "–"}
+                    </span>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Card reference accordion */}
+            {gameMode === "digital" && mySeat >= 0 && (
+              <CardInfoPanel />
+            )}
+
+            {/* Scorekeeper panel lives in right rail */}
+            {gameMode === "scorekeeper" && (mySeat === 0 || isSingleScorer) && (
+              <ScorekeeperPanel
+                phase={phase}
+                round={round}
+                maxPlayers={maxPlayers}
+                players={sortedPlayers}
+                bids={skBids}
+                won={skWon}
+                bonuses={skBonuses}
+                onBidChange={(seat, val) =>
+                  setSkBids((prev) => prev.map((b, i) => (i === seat ? val : b)))
+                }
+                onWonChange={(seat, val) =>
+                  setSkWon((prev) => prev.map((w, i) => (i === seat ? val : w)))
+                }
+                onBonusChange={(seat, key, val) =>
+                  setSkBonuses((prev) =>
+                    prev.map((b, i) => (i === seat ? { ...b, [key]: val } : b)),
+                  )
+                }
+                onSubmitBids={handleScorekeeperSubmitBids}
+                onSubmitResult={handleScorekeeperSubmitResult}
+              />
+            )}
+          </aside>
+
+          {/* BOTTOM: Hand */}
+          {gameMode === "digital" && mySeat >= 0 && myHand.length > 0 && (
+            <div className="td-hand-row">
+              <div className="td-hand-panel">
+                <div className="td-hand-head">
+                  <span className="td-hand-title">Your hand</span>
+                  <div className="td-hand-rule" />
+                  <span className="td-hand-count">{myHand.length} cards</span>
+                </div>
+                <div className="td-hand">
+                  {myHand.map((cardId, idx) => {
+                    const card = getCard(cardId);
+                    const rot = (idx - Math.floor(myHand.length / 2)) * 3;
+                    const canPlay =
+                      isMyTurn && phase === "playing" && pendingPlayCardId === null;
+                    return (
+                      <button
+                        key={cardId}
+                        onClick={() => canPlay && handlePlayCard(cardId)}
+                        disabled={!canPlay}
+                        style={{ background: "none", border: "none", padding: 0, cursor: canPlay ? "pointer" : "default" }}
+                        aria-label={`Play card ${card.name ?? card.type}`}
+                      >
+                        <CardDisplay
+                          card={card}
+                          rotation={rot}
+                          playable={canPlay}
+                        />
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        /* ── LOBBY ── */
+        <div style={{ maxWidth: "600px", margin: "0 auto", paddingTop: "20px" }}>
+
+          {/* Single-scorer: host enters names */}
+          {isSingleScorer && (mySeat === 0 || mySeat === -1) && (
+            <div className="td-scroll">
+              <div className="td-scroll-header">
+                <h2>Enter player names</h2>
+                <div className="td-scroll-rule" />
+              </div>
+              <p className="font-sans text-xs mb-4" style={{ color: "var(--ink-soft)", opacity: 0.7 }}>
+                You'll score for everyone at the table
+              </p>
+              <div className="space-y-3 mb-5">
+                {Array.from({ length: maxPlayers }).map((_, i) => (
+                  <div key={i}>
+                    <label className="td-input-label">Player {i + 1}</label>
+                    <input
+                      type="text"
+                      placeholder={`Player ${i + 1}`}
+                      value={singleScorerNames[i] ?? ""}
+                      onChange={(e) =>
+                        setSingleScorerNames((prev) =>
+                          prev.map((n, idx) => (idx === i ? e.target.value : n)),
+                        )
+                      }
+                      maxLength={20}
+                      className="td-input"
+                    />
+                  </div>
+                ))}
+              </div>
+              <BtnPrimary
+                fullWidth
+                onClick={handleSingleScorerStart}
+                disabled={singleScorerNames.filter((n) => n.trim()).length < 2}
+              >
+                Start Scoring
+              </BtnPrimary>
+            </div>
+          )}
+
+          {/* Single-scorer: non-host waiting */}
+          {isSingleScorer && mySeat > 0 && (
+            <div className="td-scroll text-center">
+              <p className="font-sans text-sm" style={{ color: "var(--ink-soft)" }}>
+                Waiting for host to start the game…
+              </p>
+            </div>
+          )}
+
+          {/* Distributed: players join */}
+          {!isSingleScorer && (
+            <div className="td-scroll">
+              <div className="td-scroll-header">
+                <h2>Waiting for crew ({sortedPlayers.length}/{maxPlayers})</h2>
+                <div className="td-scroll-rule" />
+              </div>
+              <ul className="td-score-list mb-4">
+                {sortedPlayers.map((p) => (
+                  <li key={p.seat} className="td-score-row">
+                    <div className="td-player-col">
+                      <span className="td-player-name" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "var(--forest)", display: "inline-block", flexShrink: 0 }} />
+                        {p.name}
+                        {p.seat === mySeat ? " (you)" : ""}
+                      </span>
+                    </div>
+                  </li>
+                ))}
+                {Array.from({ length: maxPlayers - sortedPlayers.length }).map((_, i) => (
+                  <li key={i} className="td-score-row" style={{ opacity: 0.4 }}>
+                    <div className="td-player-col">
+                      <span className="td-player-name" style={{ display: "flex", alignItems: "center", gap: "8px", fontStyle: "italic" }}>
+                        <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "var(--parchment-edge)", display: "inline-block", flexShrink: 0, opacity: 0.4 }} />
+                        Waiting…
+                      </span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+
+              <BtnSecondary fullWidth onClick={handleCopyLink} style={{ marginBottom: "12px" }}>
+                {copied ? "Copied!" : "Copy invite link"}
+              </BtnSecondary>
+
+              {mySeat === 0 && sortedPlayers.length >= 2 && (
+                <BtnPrimary fullWidth onClick={handleStartGame}>
+                  Start Game ({sortedPlayers.length} players)
+                </BtnPrimary>
+              )}
+              {mySeat === 0 && sortedPlayers.length < 2 && (
+                <p className="font-sans text-sm text-center" style={{ color: "var(--ink-faint)" }}>
+                  Need at least 2 players to start
+                </p>
+              )}
             </div>
           )}
         </div>
       )}
 
-      {/* Player hand (digital mode) */}
-      {gameMode === "digital" && mySeat >= 0 && myHand.length > 0 && (
-        <div className="w-full max-w-2xl bg-gray-900 rounded-xl border border-gray-700 p-4">
-          <h3 className="text-white font-semibold text-sm mb-3">
-            Your Hand
-            {!isMyTurn && phase === "playing" && (
-              <span className="text-gray-500 font-normal ml-2 text-xs">
-                (waiting for your turn)
-              </span>
-            )}
-          </h3>
-          <div className="flex flex-wrap gap-2">
-            {myHand.map((cardId) => {
-              const card = getCard(cardId);
-              return (
-                <button
-                  key={cardId}
-                  onClick={() => isMyTurn && handlePlayCard(cardId)}
-                  disabled={!isMyTurn || phase !== "playing"}
-                  className={`transition-all ${
-                    isMyTurn
-                      ? "hover:-translate-y-1 hover:ring-2 hover:ring-amber-400 cursor-pointer"
-                      : "opacity-70 cursor-default"
-                  }`}
-                >
-                  <CardDisplay card={card} />
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Card info reference panel */}
-      {gameMode === "digital" && mySeat >= 0 && <CardInfoPanel />}
-
-      {/* Scorekeeper mode UI */}
-      {gameMode === "scorekeeper" && phase !== "lobby" && (mySeat === 0 || isSingleScorer) && (
-        <ScorekeeperPanel
-          phase={phase}
-          round={round}
-          maxPlayers={maxPlayers}
-          players={sortedPlayers}
-          bids={skBids}
-          won={skWon}
-          bonuses={skBonuses}
-          onBidChange={(seat, val) =>
-            setSkBids((prev) => prev.map((b, i) => (i === seat ? val : b)))
-          }
-          onWonChange={(seat, val) =>
-            setSkWon((prev) => prev.map((w, i) => (i === seat ? val : w)))
-          }
-          onBonusChange={(seat, key, val) =>
-            setSkBonuses((prev) =>
-              prev.map((b, i) => (i === seat ? { ...b, [key]: val } : b)),
-            )
-          }
-          onSubmitBids={handleScorekeeperSubmitBids}
-          onSubmitResult={handleScorekeeperSubmitResult}
-        />
-      )}
-
-      {/* Scorekeeper: non-host view */}
-      {gameMode === "scorekeeper" && phase !== "lobby" && mySeat !== 0 && !isSingleScorer && (
-        <div className="w-full max-w-2xl bg-gray-900 rounded-xl border border-gray-700 p-4 text-center">
-          <p className="text-gray-400 text-sm">
-            {phase === "bidding"
-              ? "Waiting for host to enter bids..."
-              : "Waiting for host to enter round results..."}
-          </p>
-        </div>
-      )}
-
-      {/* Chat */}
+      {/* ── Chat ─── */}
       <div className="fixed bottom-4 right-4 z-30">
         {chatOpen && (
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-3 mb-2 w-72 flex flex-col gap-2">
-            <div className="max-h-48 overflow-y-auto space-y-1">
+          <div className="td-chat-panel mb-2">
+            <div style={{ maxHeight: "192px", overflowY: "auto" }} className="space-y-1 mb-2">
               {chatMessages.slice(-20).map((m, i) => (
-                <p key={i} className="text-gray-300 text-xs">
-                  <span className="text-amber-400">{m.playerName}:</span>{" "}
+                <p key={i} className="font-sans text-xs" style={{ color: "var(--ink-soft)" }}>
+                  <span className="font-semibold" style={{ color: "var(--gold-lo)" }}>{m.playerName}:</span>{" "}
                   {m.text}
                 </p>
               ))}
               {chatMessages.length === 0 && (
-                <p className="text-gray-600 text-xs italic">No messages yet</p>
+                <p className="font-sans text-xs italic" style={{ color: "var(--ink-faint)" }}>No messages yet</p>
               )}
             </div>
             {mySeat >= 0 && (
-              <div className="flex gap-1 border-t border-gray-700 pt-2">
+              <div className="flex gap-1" style={{ borderTop: "1px solid rgba(26,22,18,0.15)", paddingTop: "8px" }}>
                 <input
                   type="text"
                   value={chatInput}
@@ -1019,9 +1175,10 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
                       setChatInput("");
                     }
                   }}
-                  placeholder="Type a message..."
+                  placeholder="Type a message…"
                   maxLength={200}
-                  className="flex-1 bg-gray-800 text-white text-xs rounded-lg px-2 py-1.5 outline-none"
+                  className="td-input flex-1 text-xs"
+                  style={{ fontSize: "12px" }}
                 />
                 <button
                   onClick={() => {
@@ -1031,7 +1188,8 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
                     }
                   }}
                   disabled={!chatInput.trim()}
-                  className="bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white text-xs rounded-lg px-2"
+                  className="td-btn-primary"
+                  style={{ padding: "4px 10px", fontSize: "11px", marginTop: 0 }}
                 >
                   Send
                 </button>
@@ -1041,65 +1199,76 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
         )}
         <button
           onClick={() => setChatOpen((v) => !v)}
-          className="bg-gray-800 hover:bg-gray-700 text-white text-sm rounded-full px-3 py-1.5 border border-gray-600"
+          className="td-btn-secondary"
+          style={{ marginTop: 0, padding: "6px 14px", fontSize: "12px" }}
+          aria-label="Toggle chat"
         >
-          💬 {chatMessages.length > 0 && !chatOpen ? chatMessages.length : ""}
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M4 4h16v12H4z" stroke="currentColor" strokeWidth="1.5" />
+            <path d="M4 16l4 4v-4" stroke="currentColor" strokeWidth="1.5" fill="none" />
+          </svg>
+          {chatMessages.length > 0 && !chatOpen ? ` ${chatMessages.length}` : ""}
         </button>
       </div>
     </div>
   );
 }
 
-// ─── Card Display Component ──────────────────────────────────────────────────
+// ─── CardDisplay ─────────────────────────────────────────────────────────────
 
 function CardDisplay({
   card,
   tigressChoice,
+  rotation = 0,
+  playable = false,
+  played = false,
 }: {
   card: Card;
   tigressChoice?: "escape" | "pirate";
+  rotation?: number;
+  playable?: boolean;
+  played?: boolean;
 }) {
-  const suitEmoji: Record<string, string> = {
-    parrots: "🦜",
-    maps: "🗺️",
-    treasure_chests: "📦",
-    jolly_rogers: "☠️",
+  // Map domain card types / suits to Tabledeck Card props
+  const suitMap: Record<string, "parrot" | "chest" | "map" | "jolly"> = {
+    parrots: "parrot",
+    maps: "map",
+    treasure_chests: "chest",
+    jolly_rogers: "jolly",
   };
 
-  const typeEmoji: Record<string, string> = {
-    escape: "🏳️",
-    pirate: "⚔️",
-    tigress: "🐯",
-    skull_king: "💀",
-    mermaid: "🧜",
-  };
-
-  const suitColors: Record<string, string> = {
-    parrots: "text-green-400",
-    maps: "text-blue-400",
-    treasure_chests: "text-yellow-400",
-    jolly_rogers: "text-gray-200",
-  };
+  const effectiveType = tigressChoice ?? card.type;
 
   if (card.type === "numbered" && card.suit) {
+    const suit = suitMap[card.suit] ?? "parrot";
     return (
-      <div className="bg-gray-800 border border-gray-600 rounded-lg w-14 h-20 flex flex-col items-center justify-center gap-1">
-        <span className="text-lg">{suitEmoji[card.suit]}</span>
-        <span className={`text-xl font-bold ${suitColors[card.suit]}`}>
-          {card.value}
-        </span>
-      </div>
+      <TDCard
+        suit={suit}
+        value={card.value}
+        variant="numbered"
+        rotation={rotation}
+        playable={playable}
+        played={played}
+      />
     );
   }
 
-  const effectiveType = tigressChoice ?? card.type;
+  const variantMap: Record<string, "pirate" | "mermaid" | "skull-king" | "tigress" | "escape"> = {
+    pirate: "pirate",
+    mermaid: "mermaid",
+    skull_king: "skull-king",
+    tigress: "tigress",
+    escape: "escape",
+  };
+
+  const variant = variantMap[effectiveType] ?? "escape";
   return (
-    <div className="bg-gray-800 border border-gray-600 rounded-lg w-14 h-20 flex flex-col items-center justify-center gap-1">
-      <span className="text-2xl">{typeEmoji[effectiveType] ?? "❓"}</span>
-      <span className="text-gray-400 text-xs text-center leading-tight px-1">
-        {card.name ?? card.type}
-      </span>
-    </div>
+    <TDCard
+      variant={variant}
+      rotation={rotation}
+      playable={playable}
+      played={played}
+    />
   );
 }
 
@@ -1108,44 +1277,40 @@ function CardDisplay({
 function CardInfoPanel() {
   const [open, setOpen] = useState(false);
   return (
-    <div className="w-full max-w-2xl">
+    <div style={{ marginTop: "14px" }}>
       <button
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center justify-between px-4 py-2 bg-gray-900 border border-gray-700 rounded-xl text-gray-400 hover:text-gray-200 text-xs transition-colors"
+        className="td-sc w-full flex items-center justify-between"
+        style={{ cursor: "pointer", background: "none", border: "none", padding: "8px 0", borderTop: "1px dashed rgba(26,22,18,0.2)" }}
       >
         <span>Card reference</span>
-        <span>{open ? "▲" : "▼"}</span>
+        <span style={{ fontFamily: "var(--mono)", fontSize: "10px" }}>{open ? "▲" : "▼"}</span>
       </button>
       {open && (
-        <div className="bg-gray-900 border border-t-0 border-gray-700 rounded-b-xl px-4 pb-4 pt-3 space-y-4 text-xs text-gray-300">
-          {/* Suits */}
+        <div className="font-sans text-xs space-y-3 pt-2" style={{ color: "var(--ink-soft)" }}>
           <div>
-            <p className="text-gray-500 uppercase tracking-wide mb-2 font-semibold">Suits (1–14)</p>
-            <div className="grid grid-cols-2 gap-x-6 gap-y-1">
-              <span><span className="text-green-400">🦜 Parrots</span> — regular</span>
-              <span><span className="text-blue-400">🗺️ Maps</span> — regular</span>
-              <span><span className="text-yellow-400">📦 Treasure Chests</span> — regular</span>
-              <span><span className="text-gray-200">☠️ Jolly Rogers</span> — <span className="text-amber-400 font-semibold">trump</span> (beats other suits)</span>
+            <p className="td-sc mb-2">Suits (1–14)</p>
+            <div className="grid grid-cols-1 gap-1">
+              <span style={{ color: "var(--burgundy)" }}>Parrots — regular</span>
+              <span style={{ color: "var(--copper)" }}>Maps — regular</span>
+              <span style={{ color: "var(--forest)" }}>Treasure Chests — regular</span>
+              <span style={{ color: "var(--navy-mid)" }}>Jolly Rogers — trump (beats other suits)</span>
             </div>
-            <p className="text-gray-500 mt-1">Must follow lead suit if you have it. Special cards can always be played.</p>
           </div>
-          {/* Hierarchy */}
           <div>
-            <p className="text-gray-500 uppercase tracking-wide mb-2 font-semibold">Who wins the trick</p>
+            <p className="td-sc mb-2">Who wins the trick</p>
             <ol className="space-y-1 list-none">
-              <li><span className="text-gray-500 mr-1">1.</span>🧜 <strong>Mermaid</strong> — beats Skull King when both in trick</li>
-              <li><span className="text-gray-500 mr-1">2.</span>💀 <strong>Skull King</strong> — beats all Pirates</li>
-              <li><span className="text-gray-500 mr-1">3.</span>⚔️ <strong>Pirate</strong> (5 cards) — beats all numbered &amp; Mermaids</li>
-              <li><span className="text-gray-500 mr-1">4.</span>🧜 <strong>Mermaid</strong> (2 cards) — beats numbered, loses to Pirates</li>
-              <li><span className="text-gray-500 mr-1">5.</span>☠️ <strong>Jolly Rogers</strong> (trump) — beats other suits</li>
-              <li><span className="text-gray-500 mr-1">6.</span>Highest card of lead suit</li>
-              <li><span className="text-gray-500 mr-1">7.</span>🏳️ <strong>Escape</strong> — always loses</li>
+              <li>1. Mermaid beats Skull King</li>
+              <li>2. Skull King beats all Pirates</li>
+              <li>3. Pirate beats all numbered</li>
+              <li>4. Jolly Rogers (trump) beats other suits</li>
+              <li>5. Highest card of lead suit</li>
+              <li>6. Escape always loses</li>
             </ol>
           </div>
-          {/* Tigress */}
           <div>
-            <p className="text-gray-500 uppercase tracking-wide mb-1 font-semibold">Tigress 🐯</p>
-            <p>Choose when played: acts as <strong>Escape</strong> or <strong>Pirate</strong>.</p>
+            <p className="td-sc mb-1">Tigress</p>
+            <p>Choose when played: acts as Escape or Pirate.</p>
           </div>
         </div>
       )}
@@ -1186,25 +1351,28 @@ function ScorekeeperPanel({
 }: ScorekeeperPanelProps) {
   if (phase === "bidding") {
     return (
-      <div className="w-full max-w-2xl bg-gray-900 rounded-xl border border-gray-700 p-4">
-        <h3 className="text-white font-semibold mb-4">Round {round} — Enter Bids</h3>
+      <>
+        <div className="td-scroll-header">
+          <h2>Round {round} — Bids</h2>
+          <div className="td-scroll-rule" />
+        </div>
         <div className="space-y-3">
           {players.map((p) => (
             <div key={p.seat} className="flex items-center justify-between">
-              <span className="text-gray-300 text-sm w-32 truncate">{p.name}</span>
+              <span className="font-serif font-semibold text-sm" style={{ color: "var(--ink)" }}>{p.name}</span>
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => onBidChange(p.seat, Math.max(0, bids[p.seat] - 1))}
-                  className="bg-gray-700 text-white w-8 h-8 rounded-lg font-bold"
+                  className="td-spinner-btn"
                 >
                   −
                 </button>
-                <span className="text-white font-bold w-8 text-center">
+                <span className="font-mono font-bold w-8 text-center" style={{ color: "var(--ink)", fontSize: "18px" }}>
                   {bids[p.seat]}
                 </span>
                 <button
                   onClick={() => onBidChange(p.seat, Math.min(round, bids[p.seat] + 1))}
-                  className="bg-gray-700 text-white w-8 h-8 rounded-lg font-bold"
+                  className="td-spinner-btn"
                 >
                   +
                 </button>
@@ -1212,47 +1380,47 @@ function ScorekeeperPanel({
             </div>
           ))}
         </div>
-        <button
-          onClick={onSubmitBids}
-          className="mt-4 w-full bg-amber-600 hover:bg-amber-500 text-white font-semibold rounded-lg py-3"
-        >
+        <BtnPrimary fullWidth onClick={onSubmitBids}>
           Start Round
-        </button>
-      </div>
+        </BtnPrimary>
+      </>
     );
   }
 
   if (phase === "playing") {
     const bonusKeys: { key: string; label: string }[] = [
       { key: "standardFourteen", label: "14 captured (+10)" },
-      { key: "blackFourteen", label: "☠️14 captured (+20)" },
-      { key: "pirateMermaidCapture", label: "🧜 by ⚔️ (+20)" },
-      { key: "skullKingPirateCapture", label: "⚔️ by 💀 (+30)" },
-      { key: "mermaidSkullKingCapture", label: "💀 by 🧜 (+40)" },
+      { key: "blackFourteen", label: "Black 14 captured (+20)" },
+      { key: "pirateMermaidCapture", label: "Mermaid by Pirate (+20)" },
+      { key: "skullKingPirateCapture", label: "Pirate by Skull King (+30)" },
+      { key: "mermaidSkullKingCapture", label: "Skull King by Mermaid (+40)" },
     ];
 
     return (
-      <div className="w-full max-w-2xl bg-gray-900 rounded-xl border border-gray-700 p-4">
-        <h3 className="text-white font-semibold mb-4">Round {round} — Enter Results</h3>
+      <>
+        <div className="td-scroll-header">
+          <h2>Round {round} — Results</h2>
+          <div className="td-scroll-rule" />
+        </div>
         <div className="space-y-4">
           {players.map((p) => (
-            <div key={p.seat} className="border border-gray-700 rounded-lg p-3">
+            <div key={p.seat} style={{ borderBottom: "1px dashed rgba(26,22,18,0.18)", paddingBottom: "12px" }}>
               <div className="flex items-center justify-between mb-2">
-                <span className="text-white font-medium text-sm">{p.name}</span>
+                <span className="font-serif font-semibold text-sm" style={{ color: "var(--ink)" }}>{p.name}</span>
                 <div className="flex items-center gap-2">
-                  <span className="text-gray-400 text-xs">Tricks won:</span>
+                  <span className="td-sc">Won:</span>
                   <button
                     onClick={() => onWonChange(p.seat, Math.max(0, won[p.seat] - 1))}
-                    className="bg-gray-700 text-white w-7 h-7 rounded font-bold text-sm"
+                    className="td-spinner-btn"
                   >
                     −
                   </button>
-                  <span className="text-white font-bold w-6 text-center">
+                  <span className="font-mono font-bold w-6 text-center" style={{ color: "var(--ink)" }}>
                     {won[p.seat]}
                   </span>
                   <button
                     onClick={() => onWonChange(p.seat, Math.min(round, won[p.seat] + 1))}
-                    className="bg-gray-700 text-white w-7 h-7 rounded font-bold text-sm"
+                    className="td-spinner-btn"
                   >
                     +
                   </button>
@@ -1261,32 +1429,26 @@ function ScorekeeperPanel({
               <div className="space-y-1">
                 {bonusKeys.map(({ key, label }) => (
                   <div key={key} className="flex items-center justify-between">
-                    <span className="text-gray-400 text-xs">{label}</span>
+                    <span className="font-sans" style={{ fontSize: "11px", color: "var(--ink-faint)" }}>{label}</span>
                     <div className="flex items-center gap-1">
                       <button
                         onClick={() =>
-                          onBonusChange(
-                            p.seat,
-                            key,
-                            Math.max(0, (bonuses[p.seat][key] ?? 0) - 1),
-                          )
+                          onBonusChange(p.seat, key, Math.max(0, (bonuses[p.seat][key] ?? 0) - 1))
                         }
-                        className="bg-gray-700 text-white w-6 h-6 rounded text-xs font-bold"
+                        className="td-spinner-btn"
+                        style={{ width: "22px", height: "22px", fontSize: "12px" }}
                       >
                         −
                       </button>
-                      <span className="text-white text-xs w-5 text-center">
+                      <span className="font-mono" style={{ fontSize: "11px", width: "18px", textAlign: "center", color: "var(--ink)" }}>
                         {bonuses[p.seat][key] ?? 0}
                       </span>
                       <button
                         onClick={() =>
-                          onBonusChange(
-                            p.seat,
-                            key,
-                            (bonuses[p.seat][key] ?? 0) + 1,
-                          )
+                          onBonusChange(p.seat, key, (bonuses[p.seat][key] ?? 0) + 1)
                         }
-                        className="bg-gray-700 text-white w-6 h-6 rounded text-xs font-bold"
+                        className="td-spinner-btn"
+                        style={{ width: "22px", height: "22px", fontSize: "12px" }}
                       >
                         +
                       </button>
@@ -1297,13 +1459,10 @@ function ScorekeeperPanel({
             </div>
           ))}
         </div>
-        <button
-          onClick={onSubmitResult}
-          className="mt-4 w-full bg-amber-600 hover:bg-amber-500 text-white font-semibold rounded-lg py-3"
-        >
+        <BtnPrimary fullWidth onClick={onSubmitResult}>
           Score Round
-        </button>
-      </div>
+        </BtnPrimary>
+      </>
     );
   }
 

@@ -205,6 +205,11 @@ function applyPlayCard(
   if (state.phase !== "playing") return state;
   if (state.currentSeat !== seat) return state;
 
+  // Enforce one-card-per-trick: if this seat has already played into the
+  // current trick, reject. This is a defense-in-depth check against races
+  // where two play_card messages arrive before currentSeat advances.
+  if (state.trickCards.some((tc) => tc.seat === seat)) return state;
+
   // Remove card from hand
   const hand = state.hands[seat];
   const cardIdx = hand.indexOf(cardId);

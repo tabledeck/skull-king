@@ -3,6 +3,7 @@ import type { Route } from "./+types/signup";
 import { getOptionalUserFromContext } from "~/domain/utils/global-context.server";
 import { useState } from "react";
 import { signUp } from "~/lib/auth-client";
+import { BtnPrimary } from "~/components/tabledeck/BtnPrimary";
 
 export function meta() {
   return [{ title: "Sign Up — Skull King" }];
@@ -39,53 +40,75 @@ export default function Signup() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-950 flex flex-col items-center justify-center p-4">
-      <h1 className="text-3xl font-bold text-white mb-2">Skull King</h1>
-      <p className="text-gray-400 mb-8">Create an account to save your pillages</p>
-      <form
-        onSubmit={handleSignup}
-        className="flex flex-col gap-4 w-full max-w-sm"
-      >
-        <input
-          type="text"
-          placeholder="Pirate name"
-          required
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          className="bg-gray-800 text-white rounded-lg px-4 py-3 outline-none focus:ring-2 focus:ring-amber-500"
-        />
-        <input
-          type="email"
-          placeholder="Email"
-          required
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          className="bg-gray-800 text-white rounded-lg px-4 py-3 outline-none focus:ring-2 focus:ring-amber-500"
-        />
-        <input
-          type="password"
-          placeholder="Password (min 8 chars)"
-          required
-          minLength={8}
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          className="bg-gray-800 text-white rounded-lg px-4 py-3 outline-none focus:ring-2 focus:ring-amber-500"
-        />
-        {error && <p className="text-red-400 text-sm text-center">{error}</p>}
-        <button
-          type="submit"
-          disabled={loading}
-          className="bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white font-semibold rounded-lg px-4 py-3 transition-colors"
+    <div className="td-table min-h-screen flex flex-col items-center justify-center p-4">
+      {/* Wordmark */}
+      <div className="mb-8 text-center">
+        <h1
+          className="font-serif font-semibold"
+          style={{ fontSize: "36px", fontStyle: "italic", color: "var(--gold-hi)", textShadow: "0 1px 0 rgba(0,0,0,0.5)" }}
         >
-          {loading ? "Creating account..." : "Create Account"}
-        </button>
-        <p className="text-gray-400 text-sm text-center">
-          Already have an account?{" "}
-          <a href="/login" className="text-amber-400 hover:underline">
-            Sign in
-          </a>
+          Skull King
+        </h1>
+        <p
+          className="font-serif mt-1"
+          style={{ fontVariant: "small-caps", letterSpacing: "0.22em", fontSize: "12px", color: "var(--parchment)", opacity: 0.55 }}
+        >
+          Create an account to save your pillages
         </p>
-      </form>
+      </div>
+
+      <div className="td-auth-card">
+        <form onSubmit={handleSignup} className="flex flex-col gap-4">
+          <div>
+            <label className="td-input-label">Pirate name</label>
+            <input
+              type="text"
+              placeholder="Captain Redbeard"
+              required
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="td-input"
+            />
+          </div>
+          <div>
+            <label className="td-input-label">Email</label>
+            <input
+              type="email"
+              placeholder="captain@sea.com"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="td-input"
+            />
+          </div>
+          <div>
+            <label className="td-input-label">Password (min 8 chars)</label>
+            <input
+              type="password"
+              placeholder="••••••••"
+              required
+              minLength={8}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="td-input"
+            />
+          </div>
+          {error && (
+            <p className="font-sans text-sm text-center" style={{ color: "var(--copper)" }}>
+              {error}
+            </p>
+          )}
+          <BtnPrimary type="submit" disabled={loading} fullWidth>
+            {loading ? "Creating account…" : "Create Account"}
+          </BtnPrimary>
+          <p className="font-sans text-sm text-center" style={{ color: "var(--ink-soft)" }}>
+            Already have an account?{" "}
+            <a href="/login" className="underline" style={{ color: "var(--gold-lo)" }}>
+              Sign in
+            </a>
+          </p>
+        </form>
+      </div>
     </div>
   );
 }

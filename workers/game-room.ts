@@ -13,6 +13,12 @@ import {
 import { ClientMessage } from "../app/domain/messages";
 
 export class SkullKingRoomDO extends BaseGameRoomDO<GameState, GameSettings, Env> {
+  // Tracks seats whose play_card is mid-processing. Prevents a second
+  // play_card from the same seat from slipping through while the first
+  // is still awaiting persistence / applyMove side-effects. Ephemeral
+  // by design — re-entrancy guards have no meaning across DO evictions.
+  private _processingPlay: Set<number> = new Set();
+
   // ── Abstract implementations ─────────────────────────────────────────────
 
   protected initializeState(settings: GameSettings): GameState {
@@ -191,6 +197,13 @@ export class SkullKingRoomDO extends BaseGameRoomDO<GameState, GameSettings, Env
     tigressChoice?: "escape" | "pirate",
   ) {
     if (!this.gameState) return;
+    // Re-entrancy guard: reject rapid duplicate plays from the same seat
+    // while a prior play is still being processed (prevents "play two
+    // cards in one trick" races caused by double-clicks / fast sends).
+    if (this._processingPlay.has(seat)) {
+      ws.send(JSON.stringify({ type: "error", message: "Already playing a card" }));
+      return;
+    }
     if (this.gameState.phase !== "playing") {
       ws.send(JSON.stringify({ type: "error", message: "Not in playing phase" }));
       return;
@@ -199,58 +212,68 @@ export class SkullKingRoomDO extends BaseGameRoomDO<GameState, GameSettings, Env
       ws.send(JSON.stringify({ type: "error", message: "Not your turn" }));
       return;
     }
-
-    const { validatePlayCard } = await import("../app/domain/validation");
-    const validation = validatePlayCard(
-      cardId,
-      this.gameState.hands[seat] ?? [],
-      this.gameState.trickCards,
-      tigressChoice,
-    );
-    if (!validation.valid) {
-      ws.send(JSON.stringify({ type: "error", message: validation.reason }));
+    // Authoritative check: a player may play exactly one card per trick.
+    if (this.gameState.trickCards.some((tc) => tc.seat === seat)) {
+      ws.send(JSON.stringify({ type: "error", message: "Already played this trick" }));
       return;
     }
 
-    const playMove: MoveRecord = {
-      seat,
-      sequence: this.nextSequence++,
-      moveType: "play_card",
-      data: { type: "play_card", cardId, tigressChoice },
-    };
+    this._processingPlay.add(seat);
+    try {
+      const { validatePlayCard } = await import("../app/domain/validation");
+      const validation = validatePlayCard(
+        cardId,
+        this.gameState.hands[seat] ?? [],
+        this.gameState.trickCards,
+        tigressChoice,
+      );
+      if (!validation.valid) {
+        ws.send(JSON.stringify({ type: "error", message: validation.reason }));
+        return;
+      }
 
-    this.gameState = applyMove(this.gameState, playMove);
-    await this.persistState();
-    await this.persistMoveToDB(playMove);
+      const playMove: MoveRecord = {
+        seat,
+        sequence: this.nextSequence++,
+        moveType: "play_card",
+        data: { type: "play_card", cardId, tigressChoice },
+      };
 
-    this.broadcast(JSON.stringify({ type: "card_played", seat, cardId, tigressChoice, currentSeat: this.gameState.currentSeat }));
+      this.gameState = applyMove(this.gameState, playMove);
+      await this.persistState();
+      await this.persistMoveToDB(playMove);
 
-    const trickComplete = this.gameState.trickCards.length === 0 &&
-      this.gameState.phase !== "lobby";
-    if (trickComplete) {
-      this.broadcast(JSON.stringify({
-        type: "trick_result",
-        winner: this.gameState.leadSeat,
-        trickCards: [],
-        scores: this.gameState.cumulativeScores,
-      }));
-    }
+      this.broadcast(JSON.stringify({ type: "card_played", seat, cardId, tigressChoice, currentSeat: this.gameState.currentSeat }));
 
-    if (this.gameState.phase === "scoring" || this.gameState.phase === "complete") {
-      this.broadcast(JSON.stringify({
-        type: "round_score",
-        scores: this.gameState.cumulativeScores,
-        roundData: this.gameState.roundData,
-      }));
-    }
+      const trickComplete = this.gameState.trickCards.length === 0 &&
+        this.gameState.phase !== "lobby";
+      if (trickComplete) {
+        this.broadcast(JSON.stringify({
+          type: "trick_result",
+          winner: this.gameState.leadSeat,
+          trickCards: [],
+          scores: this.gameState.cumulativeScores,
+        }));
+      }
 
-    if (this.gameState.phase === "complete") {
-      await this.syncStatusToDB("finished");
-      this.broadcast(JSON.stringify({
-        type: "game_over",
-        finalScores: this.gameState.cumulativeScores,
-        winner: this.gameState.winner,
-      }));
+      if (this.gameState.phase === "scoring" || this.gameState.phase === "complete") {
+        this.broadcast(JSON.stringify({
+          type: "round_score",
+          scores: this.gameState.cumulativeScores,
+          roundData: this.gameState.roundData,
+        }));
+      }
+
+      if (this.gameState.phase === "complete") {
+        await this.syncStatusToDB("finished");
+        this.broadcast(JSON.stringify({
+          type: "game_over",
+          finalScores: this.gameState.cumulativeScores,
+          winner: this.gameState.winner,
+        }));
+      }
+    } finally {
+      this._processingPlay.delete(seat);
     }
   }
 
