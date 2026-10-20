@@ -91,6 +91,13 @@ export class SkullKingRoomDO extends BaseGameRoomDO<GameState, GameSettings, Env
         case "next_round":
           await this.handleNextRound(ws, seat);
           break;
+        case "announce_rematch":
+          this.broadcast(JSON.stringify({
+            type: "rematch_ready",
+            gameId: msg.gameId,
+            name: this.gameState.players[seat]?.name ?? playerName,
+          }));
+          break;
         case "set_player_names":
           await this.handleSetPlayerNames(ws, seat, msg.names);
           break;
@@ -181,6 +188,11 @@ export class SkullKingRoomDO extends BaseGameRoomDO<GameState, GameSettings, Env
     this.gameState = applyMove(this.gameState, bidMove);
     await this.persistState();
     await this.persistMoveToDB(bidMove);
+
+    const waiting = this.gameState.players.flatMap((p, i) =>
+      p && this.gameState!.roundData[i]?.bid === null ? [p.name] : [],
+    );
+    this.broadcast(JSON.stringify({ type: "bid_progress", waiting }));
 
     const allBid = this.gameState.roundData.every((rd) => rd.bid !== null);
     if (allBid) {
@@ -280,7 +292,7 @@ export class SkullKingRoomDO extends BaseGameRoomDO<GameState, GameSettings, Env
   private async handleNextRound(ws: WebSocket, seat: number) {
     if (!this.gameState) return;
     if (this.gameState.phase !== "scoring") {
-      ws.send(JSON.stringify({ type: "error", message: "Not in scoring phase" }));
+      // A second tap after someone already continued is normal. Ignore it.
       return;
     }
 
