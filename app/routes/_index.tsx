@@ -185,6 +185,8 @@ export default function Index({ loaderData }: Route.ComponentProps) {
   const { user } = loaderData;
   const navigate = useNavigate();
   const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [joinCode, setJoinCode] = useState("");
   const [playerCount, setPlayerCount] = useState(4);
   const [gameMode, setGameMode] = useState<GameMode>("digital");
   const [scoringStyle, setScoringStyle] = useState<"single" | "distributed">("single");
@@ -245,6 +247,7 @@ export default function Index({ loaderData }: Route.ComponentProps) {
 
   const createGame = async () => {
     setCreating(true);
+    setCreateError(null);
     try {
       const res = await fetch("/api/game", {
         method: "POST",
@@ -255,44 +258,54 @@ export default function Index({ loaderData }: Route.ComponentProps) {
           scoringStyle: gameMode === "scorekeeper" ? scoringStyle : "distributed",
         }),
       });
-      const { gameId } = (await res.json()) as { gameId: string };
-      navigate(`/game/${gameId}`);
-    } catch {
+      const body = (await res.json()) as { gameId?: string; error?: string };
+      if (!res.ok || !body.gameId) {
+        throw new Error(body.error || "Could not create the game");
+      }
+      navigate(`/game/${body.gameId}`);
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : "Could not create the game");
       setCreating(false);
     }
   };
 
+  const joinWithCode = (event: React.FormEvent) => {
+    event.preventDefault();
+    const raw = joinCode.trim();
+    const fromUrl = raw.match(/\/game\/([^/?#]+)/);
+    const id = (fromUrl?.[1] ?? raw).replace(/[^A-Za-z0-9_-]/g, "");
+    if (id.length < 4) {
+      setCreateError("Enter a room code, or paste the invite link.");
+      return;
+    }
+    navigate(`/game/${id}`);
+  };
+
   return (
-    <div className="td-table min-h-screen flex flex-col items-center justify-center p-4 relative">
-      {/* Nav */}
-      <a
-        href="https://tabledeck.us"
-        className="absolute top-4 left-4 font-serif"
-        style={{ fontVariant: "small-caps", letterSpacing: "0.18em", fontSize: "12px", color: "var(--parchment)", opacity: 0.55 }}
-      >
-        ← tabledeck.us
-      </a>
-      <div className="absolute top-4 right-4 flex gap-3 items-center">
-        {user ? (
-          <>
-            <a href="/profile" className="font-sans text-sm" style={{ color: "var(--parchment)", opacity: 0.8 }}>
-              {user.name || user.email}
-            </a>
-            <a href="/logout" className="font-sans text-sm" style={{ color: "var(--parchment)", opacity: 0.5 }}>
-              Logout
-            </a>
-          </>
-        ) : (
-          <>
-            <a href="/login" className="font-sans text-sm" style={{ color: "var(--parchment)", opacity: 0.75 }}>
-              Login
-            </a>
-            <a href="/signup" className="font-sans text-sm font-semibold" style={{ color: "var(--gold-hi)" }}>
-              Sign Up
-            </a>
-          </>
-        )}
-      </div>
+    <div className="td-table min-h-screen flex flex-col items-center p-4" style={{ paddingTop: "max(16px, env(safe-area-inset-top))" }}>
+      <header className="td-site-header">
+        <a
+          href="https://tabledeck.us"
+          className="font-serif"
+          style={{ fontVariant: "small-caps", letterSpacing: "0.16em", fontSize: "13px" }}
+        >
+          ← tabledeck.us
+        </a>
+        <nav className="td-site-nav" aria-label="Account">
+          {user ? (
+            <>
+              <a href="/profile" className="font-sans text-sm">{user.name || user.email}</a>
+              <a href="/logout" className="font-sans text-sm">Logout</a>
+            </>
+          ) : (
+            <>
+              <a href="/login" className="font-sans text-sm">Login</a>
+              <a href="/signup" className="font-sans text-sm font-semibold" style={{ color: "var(--gold-hi)" }}>Sign Up</a>
+            </>
+          )}
+        </nav>
+      </header>
+      <div className="td-home flex-1" style={{ paddingTop: 12, paddingBottom: 24 }}>
 
       {/* Hero */}
       <div className="text-center mb-10">
@@ -325,7 +338,7 @@ export default function Index({ loaderData }: Route.ComponentProps) {
         </div>
         <p
           className="font-sans text-lg max-w-md mx-auto"
-          style={{ color: "var(--parchment)", opacity: 0.6 }}
+          style={{ color: "var(--parchment)", opacity: 0.92 }}
         >
           The swashbuckling trick-taking game — bid your tricks, plunder your
           enemies, and outwit the Skull King. Share a link to play anywhere.
@@ -391,7 +404,7 @@ export default function Index({ loaderData }: Route.ComponentProps) {
 
         {/* Player count */}
         <label className="td-input-label mb-2 block">Players</label>
-        <div className="td-bid-grid mb-6" style={{ gridTemplateColumns: "repeat(7, 1fr)" }}>
+        <div className="td-count-grid mb-6">
           {[2, 3, 4, 5, 6, 7, 8].map((n) => (
             <button
               key={n}
@@ -484,8 +497,9 @@ export default function Index({ loaderData }: Route.ComponentProps) {
                     background: "transparent",
                     color: "var(--ink-faint)",
                     cursor: "pointer",
-                    padding: "2px 4px",
-                    fontSize: 16,
+                    minWidth: 44,
+                    minHeight: 44,
+                    fontSize: 18,
                     lineHeight: 1,
                   }}
                 >
@@ -496,23 +510,38 @@ export default function Index({ loaderData }: Route.ComponentProps) {
           </div>
         )}
 
+        {createError && <p className="td-join-error" role="alert">{createError}</p>}
         <BtnPrimary onClick={createGame} disabled={creating} fullWidth>
-          {creating ? "Creating..." : "Create Game"}
+          {creating ? "Creating…" : "Create Game"}
         </BtnPrimary>
 
-        <p className="font-sans text-xs text-center mt-4" style={{ color: "var(--ink-faint)" }}>
-          You'll get a shareable link to send to your crew
-        </p>
+        <form onSubmit={joinWithCode} className="mt-5">
+          <label className="td-input-label" htmlFor="join-code">Have a code?</label>
+          <div className="td-share-row">
+            <input
+              id="join-code"
+              type="text"
+              value={joinCode}
+              onChange={(e) => setJoinCode(e.target.value)}
+              placeholder="Room code or invite link"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              className="td-input"
+            />
+            <BtnSecondary type="submit" style={{ flexShrink: 0 }}>Join</BtnSecondary>
+          </div>
+        </form>
       </div>
 
       {/* Rules link */}
-      <div className="mt-8 text-center">
+      <div className="mt-6 text-center">
         <a
           href="https://www.grandpabecksgames.com/pages/skull-king"
           target="_blank"
           rel="noopener noreferrer"
           className="font-serif underline"
-          style={{ fontVariant: "small-caps", letterSpacing: "0.14em", fontSize: "12px", color: "var(--parchment)", opacity: 0.45 }}
+          style={{ fontVariant: "small-caps", letterSpacing: "0.14em", fontSize: "15px", color: "var(--parchment)", minHeight: 44, display: "inline-flex", alignItems: "center" }}
         >
           How to play Skull King
         </a>
@@ -534,6 +563,7 @@ export default function Index({ loaderData }: Route.ComponentProps) {
           }),
         }}
       />
+      </div>
     </div>
   );
 }

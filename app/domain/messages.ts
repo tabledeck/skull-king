@@ -62,6 +62,11 @@ export const PingMsg = z.object({
   type: z.literal("ping"),
 });
 
+export const AnnounceRematchMsg = z.object({
+  type: z.literal("announce_rematch"),
+  gameId: z.string().regex(/^[A-Za-z0-9_-]{4,16}$/),
+});
+
 export const ClientMessage = z.discriminatedUnion("type", [
   JoinGameMsg,
   BidMsg,
@@ -73,6 +78,7 @@ export const ClientMessage = z.discriminatedUnion("type", [
   ScorekeeperResultMsg,
   ChatMsg,
   PingMsg,
+  AnnounceRematchMsg,
 ]);
 
 export type ClientMessage = z.infer<typeof ClientMessage>;
@@ -92,6 +98,8 @@ export type ServerMessage =
   | { type: "player_joined"; seat: number; name: string }
   | { type: "player_disconnected"; seat: number }
   | { type: "chat_broadcast"; seat: number; text: string; playerName: string }
+  | { type: "bid_progress"; waiting: string[] }
+  | { type: "rematch_ready"; gameId: string; name: string }
   | { type: "error"; message: string }
   | { type: "pong" };
 

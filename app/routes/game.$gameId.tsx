@@ -9,6 +9,7 @@ import { useGameWebSocket } from "@tabledeck/game-room/client";
 import type { PublicGameState } from "~/domain/game-state";
 import { getCard } from "~/domain/cards";
 import type { Card } from "~/domain/cards";
+import { validatePlayCard } from "~/domain/validation";
 import { Scroll } from "~/components/tabledeck/Scroll";
 import { Seal } from "~/components/tabledeck/Seal";
 import { Ticket } from "~/components/tabledeck/Ticket";
@@ -297,6 +298,18 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
   const [singleScorerNames, setSingleScorerNames] = useState<string[]>(
     Array(maxPlayers).fill(""),
   );
+  const [trickNumber, setTrickNumber] = useState(doState?.trick ?? 1);
+  const [bidWaiting, setBidWaiting] = useState<string[]>([]);
+  const [bidProgressSeen, setBidProgressSeen] = useState(false);
+  const [roundDeltas, setRoundDeltas] = useState<number[]>([]);
+  const [pendingBid, setPendingBid] = useState<number | null>(null);
+  const [rematchOffer, setRematchOffer] = useState<{ gameId: string; name: string } | null>(null);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [showReference, setShowReference] = useState(false);
+  const [showLeave, setShowLeave] = useState(false);
+  const [roundAdvanceSent, setRoundAdvanceSent] = useState(false);
+  const [compactHand, setCompactHand] = useState(false);
+  const scoresRef = useRef(cumulativeScores);
 
   const joinedRef = useRef(false);
   const mySeatRef = useRef(mySeat);
@@ -311,7 +324,24 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
       setLeadSeat(doState.leadSeat);
       setTrickCards(doState.trickCards);
       setRoundData(doState.roundData.map((rd) => ({ bid: rd.bid, won: rd.won })));
+      setTrickNumber(doState.trick ?? 1);
     }
+  }, []);
+
+  useEffect(() => {
+    scoresRef.current = cumulativeScores;
+  }, [cumulativeScores]);
+
+  useEffect(() => {
+    if (phase !== "scoring") setRoundAdvanceSent(false);
+  }, [phase]);
+
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 800px)");
+    const apply = () => setCompactHand(mq.matches);
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
   }, []);
 
   const { send } = useGameWebSocket({
@@ -332,7 +362,13 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
             setCurrentSeat(s.currentSeat);
             setLeadSeat(s.leadSeat);
             setTrickCards(s.trickCards);
+            setTrickNumber(s.trick ?? 1);
             setRoundData(s.roundData.map((rd) => ({ bid: rd.bid, won: rd.won })));
+            if (s.phase !== "bidding") {
+              setBidWaiting([]);
+              setBidProgressSeen(false);
+              setPendingBid(null);
+            }
             if (s.players) {
               setPlayers(
                 s.players
@@ -365,7 +401,11 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
               setCurrentSeat(s.currentSeat);
               setLeadSeat(s.leadSeat);
               setTrickCards([]);
+              setTrickNumber(s.trick ?? 1);
               setRoundData(s.roundData.map((rd) => ({ bid: rd.bid, won: rd.won })));
+              setBidWaiting([]);
+              setBidProgressSeen(false);
+              setPendingBid(null);
               if (s.players) {
                 setPlayers(
                   s.players
@@ -397,7 +437,18 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
             setMyHand((msg as any).hand ?? []);
             setBidSubmitted(false);
             setMyBid(null);
+            setPendingBid(null);
+            setBidWaiting([]);
+            setBidProgressSeen(false);
             break;
+          case "bid_progress": {
+            const waiting = (msg as { waiting?: unknown }).waiting;
+            if (Array.isArray(waiting)) {
+              setBidWaiting(waiting.filter((name): name is string => typeof name === "string"));
+              setBidProgressSeen(true);
+            }
+            break;
+          }
           case "bid_reveal": {
             const bids = (msg as any).bids as (number | null)[];
             setRoundData((prev) =>
@@ -426,16 +477,32 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
           }
           case "round_score": {
             const { scores, roundData: rd } = msg as any;
-            if (scores) setCumulativeScores(scores);
+            if (scores) {
+              const prev = scoresRef.current;
+              setRoundDeltas(scores.map((score: number, i: number) => score - (prev[i] ?? 0)));
+              setCumulativeScores(scores);
+            }
             if (rd) setRoundData(rd.map((r: any) => ({ bid: r.bid, won: r.won })));
             setShowRoundResult(true);
             setPhase("scoring");
+            break;
+          }
+          case "rematch_ready": {
+            const offeredId = (msg as { gameId?: unknown }).gameId;
+            const offeredBy = (msg as { name?: unknown }).name;
+            if (typeof offeredId === "string") {
+              setRematchOffer({
+                gameId: offeredId,
+                name: typeof offeredBy === "string" ? offeredBy : "A pirate",
+              });
+            }
             break;
           }
           case "game_over": {
             const { finalScores, winner: w } = msg as any;
             if (finalScores) setCumulativeScores(finalScores);
             setWinner(w);
+            setShowRoundResult(false);
             setStatus("finished");
             setPhase("complete");
             break;
@@ -465,7 +532,8 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
             break;
           }
           case "error": {
-            toast.error((msg as any).message, { theme: "dark" });
+            const raw = String((msg as { message?: unknown }).message ?? "Something went wrong");
+            toast.error(raw.replace(/_/g, " "), { theme: "dark", autoClose: 2800 });
             // If a play was rejected, release the lock so the user can retry
             setPendingPlayCardId(null);
             break;
@@ -550,10 +618,32 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
     if (validCount < 2) return;
     send({ type: "set_player_names", names: filledNames });
   };
-  const handleCopyLink = () => {
-    navigator.clipboard.writeText(shareUrl);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handleCopyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setShareOpen(true);
+      toast.error("Select the invite link and copy it", { theme: "dark" });
+    }
+  };
+  const handleNativeShare = async () => {
+    if (typeof navigator === "undefined" || typeof navigator.share !== "function") {
+      setShareOpen(true);
+      await handleCopyLink();
+      return;
+    }
+    try {
+      await navigator.share({
+        title: "Skull King",
+        text: "Join my Skull King table",
+        url: shareUrl,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") return;
+      setShareOpen(true);
+    }
   };
   const handleRematch = async () => {
     if (creatingRematch) return;
@@ -568,43 +658,136 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
       if (!res.ok || !result.gameId) {
         throw new Error(result.error || "Could not create rematch");
       }
-      navigate(`/game/${result.gameId}`);
+      send({ type: "announce_rematch", gameId: result.gameId });
+      setRematchOffer({ gameId: result.gameId, name: myName });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not create rematch", {
         theme: "dark",
       });
+    } finally {
       setCreatingRematch(false);
     }
   };
 
   const isMyTurn = phase === "playing" && currentSeat === mySeat;
   const sortedPlayers = [...players].sort((a, b) => a.seat - b.seat);
-  const leaderSeat = cumulativeScores.indexOf(Math.max(...cumulativeScores));
+  const maxScore = cumulativeScores.length ? Math.max(...cumulativeScores) : 0;
+  const leaderSeat =
+    cumulativeScores.filter((score) => score === maxScore).length === 1
+      ? cumulativeScores.indexOf(maxScore)
+      : -1;
+  const currentName = players.find((p) => p.seat === currentSeat)?.name ?? "the next pirate";
+  const othersWaiting = bidWaiting.filter((name) => name !== myName);
+  const canNativeShare = typeof navigator !== "undefined" && typeof navigator.share === "function";
 
-  // ─── Modals ────────────────────────────────────────────────────────────────
+  let statusTitle = "";
+  let statusDetail = "";
+  let statusTurn: "you" | "wait" | "info" = "info";
+  const iAmScorer = mySeat === 0 || isSingleScorer;
+  if (gameMode === "scorekeeper") {
+    if (phase === "bidding") {
+      statusTitle = iAmScorer ? "Enter every bid" : "Waiting for the scorer";
+      statusDetail = iAmScorer
+        ? "Set each pirate's bid, then start the round."
+        : "The host is writing down bids.";
+      statusTurn = iAmScorer ? "you" : "wait";
+    } else if (phase === "playing") {
+      statusTitle = iAmScorer ? "Enter the round" : "Waiting for the round result";
+      statusDetail = iAmScorer
+        ? "Count tricks won, then any bonus captures."
+        : "Play the cards at the table. The host will score them.";
+      statusTurn = iAmScorer ? "you" : "wait";
+    } else if (phase === "scoring") {
+      statusTitle = `Round ${round} scored`;
+      statusDetail = "Check the tally before the next round.";
+    } else if (phase === "complete") {
+      statusTitle = "Game over";
+      statusDetail = "The ledger is final.";
+    }
+  } else if (phase === "bidding") {
+    if (bidSubmitted) {
+      statusTitle = `Bid locked at ${myBid}`;
+      statusDetail = othersWaiting.length
+        ? `Waiting for ${othersWaiting.join(", ")}`
+        : "Waiting for the rest of the crew";
+      statusTurn = "wait";
+    } else if (mySeat >= 0) {
+      statusTitle = "Place your bid";
+      statusDetail = `How many tricks will you win? Pick 0–${round}, then lock it in.`;
+      statusTurn = "you";
+    }
+  } else if (phase === "playing") {
+    if (isMyTurn) {
+      statusTitle = "Your turn";
+      statusDetail = trickCards.length === 0
+        ? "You lead. Tap a card to play it."
+        : "Follow the lead suit if you can.";
+      statusTurn = "you";
+    } else {
+      statusTitle = `Waiting for ${currentName}`;
+      statusDetail = "Their card lands in the center.";
+      statusTurn = "wait";
+    }
+  } else if (phase === "scoring") {
+    statusTitle = `Round ${round} scored`;
+    statusDetail = "See who hit their bid, then continue.";
+  } else if (phase === "complete") {
+    statusTitle = "Game over";
+    statusDetail = "The ledger is final.";
+  }
+
+  const asideKind =
+    gameMode === "scorekeeper" && iAmScorer && (phase === "bidding" || phase === "playing")
+      ? "score"
+      : gameMode === "digital" && phase === "bidding" && mySeat >= 0
+        ? "bid"
+        : gameMode === "digital" && phase === "playing"
+          ? "round"
+          : "empty";
+
+  const shareFields = (fieldId: string) => (
+    <div className="td-share-block">
+      <label className="td-input-label" htmlFor={fieldId}>Invite link</label>
+      <div className="td-share-row">
+        <input
+          id={fieldId}
+          readOnly
+          className="td-input"
+          value={shareUrl}
+          onFocus={(e) => e.currentTarget.select()}
+        />
+        <BtnSecondary type="button" onClick={handleCopyLink} style={{ flexShrink: 0 }}>
+          {copied ? "Copied" : "Copy"}
+        </BtnSecondary>
+      </div>
+      <p className="td-room-code">
+        Room code <strong>{gameId}</strong>
+      </p>
+      {canNativeShare && (
+        <BtnPrimary type="button" fullWidth onClick={handleNativeShare}>
+          Share with your crew
+        </BtnPrimary>
+      )}
+    </div>
+  );
 
   return (
-    <div className="td-table min-h-screen" style={{ padding: "20px" }}>
-
-      {/* ── Guest name modal ─── */}
+    <div className="td-game td-table">
       {showNameModal && (
-        <div className="fixed inset-0 flex items-center justify-center z-50 p-4" style={{ background: "rgba(0,0,0,0.7)" }}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(4,8,16,0.72)" }} role="dialog" aria-modal="true" aria-labelledby="join-title">
           <div className="td-auth-card relative">
-            <h2 className="font-serif font-bold text-xl mb-1" style={{ color: "var(--ink)" }}>Join Game</h2>
-            <p className="font-sans text-sm mb-4" style={{ color: "var(--ink-soft)", opacity: 0.75 }}>
-              Enter a pirate name to play as guest, or{" "}
-              <a href="/login" className="underline" style={{ color: "var(--gold-lo)" }}>
-                sign in
-              </a>{" "}
-              for a profile.
+            <h2 id="join-title" className="font-serif font-bold text-xl mb-1" style={{ color: "var(--ink)" }}>Join the table</h2>
+            <p className="font-sans text-sm mb-4" style={{ color: "var(--ink-soft)" }}>
+              Pick a pirate name, or{" "}
+              <a href="/login" className="underline" style={{ color: "var(--gold-lo)" }}>sign in</a>
+              {" "}to keep your scores.
             </p>
-            {(joinFetcher.data as any)?.error && (
-              <p className="text-sm mb-3" style={{ color: "var(--copper)" }}>
-                {(joinFetcher.data as any).error}
-              </p>
+            {(joinFetcher.data as { error?: string } | undefined)?.error && (
+              <p className="td-join-error">{(joinFetcher.data as { error?: string }).error}</p>
             )}
-            <label className="td-input-label">Pirate name</label>
+            <label className="td-input-label" htmlFor="pirate-name">Pirate name</label>
             <input
+              id="pirate-name"
               autoFocus
               type="text"
               placeholder="Your pirate name"
@@ -620,38 +803,27 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
               disabled={joinFetcher.state !== "idle" || !guestName.trim()}
               fullWidth
             >
-              {joinFetcher.state !== "idle" ? "Boarding…" : "Board the ship!"}
+              {joinFetcher.state !== "idle" ? "Boarding…" : "Take a seat"}
             </BtnPrimary>
-            <a
-              href="/"
-              className="block w-full text-center font-sans text-sm mt-3 py-2"
-              style={{ color: "var(--ink-soft)", opacity: 0.65 }}
-            >
+            <a href="/" className="block w-full text-center font-sans text-sm mt-3 py-2" style={{ color: "var(--ink-soft)", minHeight: 44 }}>
               Cancel
             </a>
           </div>
         </div>
       )}
 
-      {/* ── Tigress choice modal ─── */}
       {tigressCardId !== null && (
-        <div className="fixed inset-0 flex items-center justify-center z-50 p-4" style={{ background: "rgba(0,0,0,0.7)" }}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(4,8,16,0.72)" }} role="dialog" aria-modal="true" aria-labelledby="tigress-title">
           <div className="td-auth-card text-center">
-            <h2 className="font-serif font-bold text-xl mb-2" style={{ color: "var(--ink)" }}>Tigress</h2>
-            <p className="font-sans text-sm mb-6" style={{ color: "var(--ink-soft)", opacity: 0.75 }}>
-              Play the Tigress as Escape or Pirate?
+            <h2 id="tigress-title" className="font-serif font-bold text-xl mb-2" style={{ color: "var(--ink)" }}>Tigress</h2>
+            <p className="font-sans text-sm mb-6" style={{ color: "var(--ink-soft)" }}>
+              Escape loses the trick. Pirate can capture it.
             </p>
             <div className="flex gap-3">
-              <BtnSecondary
-                onClick={() => handlePlayCard(tigressCardId!, "escape")}
-                fullWidth
-              >
+              <BtnSecondary onClick={() => handlePlayCard(tigressCardId, "escape")} fullWidth>
                 Escape
               </BtnSecondary>
-              <BtnPrimary
-                onClick={() => handlePlayCard(tigressCardId!, "pirate")}
-                fullWidth
-              >
+              <BtnPrimary onClick={() => handlePlayCard(tigressCardId, "pirate")} fullWidth>
                 Pirate
               </BtnPrimary>
             </div>
@@ -659,107 +831,145 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
         </div>
       )}
 
-      {/* ── Round result modal ─── */}
-      {showRoundResult && phase === "scoring" && (
-        <div className="fixed inset-0 flex items-center justify-center z-40 p-4" style={{ background: "rgba(0,0,0,0.7)" }}>
-          <div className="td-scroll relative" style={{ maxWidth: "380px", width: "100%" }}>
-            <Seal animate />
+      {showReference && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(4,8,16,0.72)" }} role="dialog" aria-modal="true" aria-labelledby="rules-title">
+          <div className="td-scroll relative" style={{ maxWidth: 420, width: "100%" }}>
             <div className="td-scroll-header">
-              <h2>Round {round} Complete</h2>
+              <h2 id="rules-title">Card reference</h2>
               <div className="td-scroll-rule" />
             </div>
-            <ul className="td-score-list mb-5 mt-2">
-              {sortedPlayers.map((p) => {
-                const score = cumulativeScores[p.seat] ?? 0;
-                return (
-                  <li key={p.seat} className={`td-score-row ${p.seat === mySeat ? "td-active" : ""}`}>
-                    <div className="td-player-col">
-                      <span className="td-player-name">
-                        {p.name}{p.seat === mySeat ? " (you)" : ""}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="td-score-val">{score}</span>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
+            <CardInfoPanel />
+            <BtnSecondary fullWidth onClick={() => setShowReference(false)} style={{ marginTop: 16 }}>
+              Close
+            </BtnSecondary>
+          </div>
+        </div>
+      )}
+
+      {showLeave && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(4,8,16,0.72)" }} role="dialog" aria-modal="true" aria-labelledby="leave-title">
+          <div className="td-auth-card">
+            <h2 id="leave-title" className="font-serif font-bold text-xl mb-2" style={{ color: "var(--ink)" }}>Leave the table?</h2>
+            <p className="font-sans text-sm mb-4" style={{ color: "var(--ink-soft)" }}>
+              The game keeps going. Use the same link to sit back down.
+            </p>
+            <BtnPrimary fullWidth onClick={() => navigate("/")}>Leave</BtnPrimary>
+            <BtnSecondary fullWidth onClick={() => setShowLeave(false)}>Stay</BtnSecondary>
+          </div>
+        </div>
+      )}
+
+      {showRoundResult && phase === "scoring" && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center p-4" style={{ background: "rgba(4,8,16,0.72)" }} role="dialog" aria-modal="true" aria-labelledby="round-title">
+          <div className="td-scroll relative" style={{ maxWidth: 440, width: "100%" }}>
+            <Seal animate />
+            <div className="td-scroll-header">
+              <h2 id="round-title">Round {round} complete</h2>
+              <div className="td-scroll-rule" />
+            </div>
+            <table className="td-round-table">
+              <thead>
+                <tr>
+                  <th>Pirate</th>
+                  <th>Bid</th>
+                  <th>Won</th>
+                  <th>Round</th>
+                  <th>Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedPlayers.map((p) => {
+                  const rd = roundData[p.seat];
+                  const delta = roundDeltas[p.seat] ?? 0;
+                  return (
+                    <tr key={p.seat} className={p.seat === mySeat ? "td-active" : ""}>
+                      <td>{p.name}{p.seat === mySeat ? " (you)" : ""}</td>
+                      <td>{rd?.bid ?? "–"}</td>
+                      <td>{rd?.won ?? 0}</td>
+                      <td className={delta < 0 ? "td-score-delta td-neg" : "td-score-delta"} style={{ display: "table-cell" }}>
+                        {delta > 0 ? `+${delta}` : delta}
+                      </td>
+                      <td>{cumulativeScores[p.seat] ?? 0}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
             {round < 10 ? (
               <BtnPrimary
                 fullWidth
+                disabled={roundAdvanceSent}
                 onClick={() => {
-                  setShowRoundResult(false);
+                  if (roundAdvanceSent) return;
+                  setRoundAdvanceSent(true);
                   send({ type: "next_round" });
                 }}
               >
-                Next Round ({round + 1})
+                {roundAdvanceSent ? "Continuing…" : `Continue to round ${round + 1}`}
               </BtnPrimary>
             ) : (
-              <BtnSecondary
-                fullWidth
-                onClick={() => setShowRoundResult(false)}
-              >
-                See Final Scores
+              <BtnSecondary fullWidth onClick={() => setShowRoundResult(false)}>
+                See final scores
               </BtnSecondary>
             )}
           </div>
         </div>
       )}
 
-      {/* ── Game over modal ─── */}
       {status === "finished" && phase === "complete" && !showRoundResult && (
-        <div className="fixed inset-0 flex items-center justify-center z-50 p-4" style={{ background: "rgba(0,0,0,0.7)" }}>
-          <div className="td-scroll relative" style={{ maxWidth: "380px", width: "100%" }}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(4,8,16,0.72)" }} role="dialog" aria-modal="true" aria-labelledby="over-title">
+          <div className="td-scroll relative" style={{ maxWidth: 420, width: "100%" }}>
             <Seal animate />
             <div className="td-scroll-header">
-              <h2>Game Over</h2>
+              <h2 id="over-title">Game over</h2>
               <div className="td-scroll-rule" />
             </div>
             {winner !== null && (
-              <p className="font-serif text-lg text-center mb-4 font-semibold" style={{ color: "var(--gold)" }}>
+              <p className="font-serif text-lg text-center mb-4 font-semibold" style={{ color: "var(--gold-lo)" }}>
                 <CrownIcon className="inline-block mr-1 align-middle" size={20} />
-                {players.find((p) => p.seat === winner)?.name ?? "Unknown"} wins!
+                {players.find((p) => p.seat === winner)?.name ?? "Unknown"} wins
               </p>
             )}
-            <ul className="td-score-list mb-5">
-              {sortedPlayers
+            <ul className="td-score-list mb-4">
+              {[...sortedPlayers]
                 .sort((a, b) => (cumulativeScores[b.seat] ?? 0) - (cumulativeScores[a.seat] ?? 0))
                 .map((p) => (
                   <li key={p.seat} className={`td-score-row ${p.seat === mySeat ? "td-active" : ""}`}>
-                    <div className="td-player-col">
-                      <span className="td-player-name">
-                        {p.name}{p.seat === mySeat ? " (you)" : ""}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="td-score-val">{cumulativeScores[p.seat] ?? 0}</span>
-                    </div>
+                    <span className="td-player-name">{p.name}{p.seat === mySeat ? " (you)" : ""}</span>
+                    <span className="td-score-val">{cumulativeScores[p.seat] ?? 0}</span>
                   </li>
                 ))}
             </ul>
-            <BtnPrimary
-              fullWidth
-              onClick={handleRematch}
-              disabled={creatingRematch}
-            >
-              {creatingRematch ? "Charting rematch…" : "Rematch with same rules"}
-            </BtnPrimary>
-            <a href="/" className="td-btn-secondary w-full flex items-center justify-center mt-3">
+            {rematchOffer ? (
+              <a href={`/game/${rematchOffer.gameId}`} className="td-btn-primary w-full mt-4">
+                Join rematch
+              </a>
+            ) : (
+              <BtnPrimary fullWidth onClick={handleRematch} disabled={creatingRematch}>
+                {creatingRematch ? "Charting rematch…" : "Rematch with the same rules"}
+              </BtnPrimary>
+            )}
+            <p className="font-sans text-xs text-center mt-3" style={{ color: "var(--ink-faint)" }}>
+              Everyone still at the table gets the rematch link.
+            </p>
+            <a href="/" className="td-btn-secondary w-full flex items-center justify-center mt-3" style={{ minHeight: 44 }}>
               New setup
             </a>
           </div>
         </div>
       )}
 
-      {/* ═══════════════════════════════════════════
-          MAIN STAGE
-          ═══════════════════════════════════════════ */}
-
-      {/* ── Top bar ─── */}
-      <div className="td-top-bar" style={{ maxWidth: "1400px", margin: "0 auto 0" }}>
-        {/* Wordmark */}
-        <div className="td-wordmark">
+      <header className="td-game-bar">
+        <a
+          href="/"
+          className="td-game-brand"
+          onClick={(event) => {
+            if (phase !== "lobby" && phase !== "complete" && status !== "finished") {
+              event.preventDefault();
+              setShowLeave(true);
+            }
+          }}
+        >
           <svg className="td-insignia" viewBox="0 0 64 64" aria-hidden="true">
             <defs>
               <radialGradient id="game-gold-rg" cx="50%" cy="40%" r="55%">
@@ -771,59 +981,119 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
             <g stroke="url(#game-gold-rg)" strokeWidth="2.4" strokeLinecap="round" fill="none">
               <line x1="10" y1="12" x2="54" y2="56" />
               <line x1="54" y1="12" x2="10" y2="56" />
-              <circle cx="10" cy="12" r="2.5" fill="url(#game-gold-rg)" stroke="none" />
-              <circle cx="54" cy="12" r="2.5" fill="url(#game-gold-rg)" stroke="none" />
             </g>
-            <path d="M32 18c-10 0-16 7-16 15 0 4 2 7 4 9v4c0 2 1 3 3 3h3v-3h2v3h8v-3h2v3h3c2 0 3-1 3-3v-4c2-2 4-5 4-9 0-8-6-15-16-15z"
-              fill="#f4e9d0" stroke="#1a1612" strokeWidth="1.4" />
+            <path d="M32 18c-10 0-16 7-16 15 0 4 2 7 4 9v4c0 2 1 3 3 3h3v-3h2v3h8v-3h2v3h3c2 0 3-1 3-3v-4c2-2 4-5 4-9 0-8-6-15-16-15z" fill="#f4e9d0" stroke="#1a1612" strokeWidth="1.4" />
             <circle cx="26" cy="34" r="3.2" fill="#1a1612" />
             <circle cx="38" cy="34" r="3.2" fill="#1a1612" />
           </svg>
-          <div>
-            <div className="td-name">Skull King</div>
-            {round > 0 && (
-              <div className="td-sub">Round {round} of 10</div>
+          <span>
+            <span className="td-name">Skull King</span>
+            {round > 0 && <span className="td-sub">Round {round} of 10</span>}
+          </span>
+        </a>
+        <div className="td-game-bar-actions">
+          {round > 0 && <Ticket label="Round" value={round} dim="/ 10" />}
+          <button type="button" className="td-btn-secondary td-bar-btn" onClick={() => setShowReference(true)}>
+            Rules
+          </button>
+          <button type="button" className="td-btn-secondary td-bar-btn" onClick={() => setShareOpen((open) => !open)} aria-expanded={shareOpen}>
+            Invite
+          </button>
+          <button type="button" className="td-btn-secondary td-bar-btn" onClick={() => setChatOpen((open) => !open)} aria-expanded={chatOpen}>
+            Chat{chatMessages.length > 0 && !chatOpen ? ` ${chatMessages.length}` : ""}
+          </button>
+          <button
+            type="button"
+            className="td-btn-secondary td-bar-btn"
+            onClick={() => {
+              if (phase === "lobby" || phase === "complete" || status === "finished") navigate("/");
+              else setShowLeave(true);
+            }}
+          >
+            Leave
+          </button>
+          {shareOpen && (
+            <div className="td-share-pop" role="dialog" aria-label="Invite your crew">
+              {shareFields("invite-pop")}
+              <button type="button" className="td-sc mt-3" onClick={() => setShareOpen(false)} style={{ background: "none", border: "none", minHeight: 44 }}>
+                Close
+              </button>
+            </div>
+          )}
+        </div>
+      </header>
+
+      {rematchOffer && (
+        <div className="td-banner" role="status">
+          <span className="font-serif">{rematchOffer.name} opened a rematch.</span>
+          <a href={`/game/${rematchOffer.gameId}`} className="td-btn-primary" style={{ minHeight: 44 }}>
+            Join rematch
+          </a>
+        </div>
+      )}
+
+      {phase !== "lobby" && statusTitle && (
+        <div className="td-status" role="status" aria-live="polite" data-turn={statusTurn}>
+          <strong>{statusTitle}</strong>
+          <span>{statusDetail}</span>
+        </div>
+      )}
+
+      {chatOpen && (
+        <div className="td-chat-sheet">
+          <div className="td-chat-panel">
+            <div className="td-chat-log space-y-1 mb-2">
+              {chatMessages.slice(-20).map((m, i) => (
+                <p key={`${m.timestamp}-${i}`} className="font-sans text-xs" style={{ color: "var(--ink-soft)" }}>
+                  <span className="font-semibold" style={{ color: "var(--gold-lo)" }}>{m.playerName}:</span> {m.text}
+                </p>
+              ))}
+              {chatMessages.length === 0 && (
+                <p className="font-sans text-xs italic" style={{ color: "var(--ink-faint)" }}>No messages yet. Say ahoy.</p>
+              )}
+            </div>
+            {mySeat >= 0 && (
+              <form
+                className="flex gap-2"
+                style={{ borderTop: "1px solid rgba(26,22,18,0.15)", paddingTop: 8 }}
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  if (!chatInput.trim()) return;
+                  send({ type: "chat", text: chatInput.trim() });
+                  setChatInput("");
+                }}
+              >
+                <input
+                  type="text"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  placeholder="Message the table"
+                  maxLength={200}
+                  className="td-input flex-1"
+                  aria-label="Chat message"
+                />
+                <BtnPrimary type="submit" disabled={!chatInput.trim()} style={{ marginTop: 0 }}>
+                  Send
+                </BtnPrimary>
+              </form>
             )}
           </div>
         </div>
+      )}
 
-        {/* Tickets + copy link */}
-        <div style={{ display: "flex", gap: "14px", alignItems: "center" }}>
-          {round > 0 && (
-            <>
-              <Ticket label="Round" value={round} dim={`/ 10`} />
-              {phase === "playing" && trickCards.length > 0 && (
-                <Ticket label="Trick" value={trickCards.length} />
-              )}
-            </>
-          )}
-          <button
-            onClick={handleCopyLink}
-            className="td-btn-secondary"
-            style={{ marginTop: 0, padding: "7px 14px", fontSize: "11px" }}
-          >
-            {copied ? "Copied!" : "Invite"}
-          </button>
-        </div>
-      </div>
-
-      {/* ── 3-column stage (lobby collapses to 1 col) ─── */}
       {phase !== "lobby" ? (
-        <div className="td-stage">
-
-          {/* LEFT: Scoreboard ledger */}
-          <aside className="td-scroll" style={{ position: "relative" }}>
+        <div className="td-play" data-phase={phase} data-mode={gameMode}>
+          <aside className="td-scroll td-ledger" aria-label="Score ledger">
             <Seal />
             <div className="td-scroll-header">
               <h2>Ledger</h2>
               <div className="td-scroll-rule" />
             </div>
-
             <ul className="td-score-list">
               {sortedPlayers.map((p) => {
                 const rd = roundData[p.seat];
                 const isActive = p.seat === currentSeat && phase === "playing";
-                const isLeader = p.seat === leaderSeat && players.length > 0;
+                const bidIn = phase === "bidding" && bidProgressSeen && !bidWaiting.includes(p.name);
                 return (
                   <li
                     key={p.seat}
@@ -831,11 +1101,12 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
                   >
                     <div className="td-player-col">
                       <span className="td-player-name">
-                        {isLeader && (
-                          <CrownIcon className="td-crown-mark" />
-                        )}
+                        {p.seat === leaderSeat && maxScore !== 0 && <CrownIcon className="td-crown-mark" />}
                         {p.name}
-                        {p.seat === mySeat ? " ✦" : ""}
+                        {p.seat === mySeat ? " (you)" : ""}
+                        {isActive && <span className="td-turn-tag">Turn</span>}
+                        {bidIn && <span className="td-bid-tag">Bid in</span>}
+                        {p.connected === false && <span className="td-away-tag">Away</span>}
                       </span>
                       <span className="td-trick-bid">
                         Bid <span className="td-mono">{rd?.bid !== null && rd?.bid !== undefined ? rd.bid : "–"}</span>
@@ -843,230 +1114,112 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
                         Won <span className="td-mono">{rd?.won ?? 0}</span>
                       </span>
                     </div>
-                    <div>
-                      <span className="td-score-val">{cumulativeScores[p.seat] ?? 0}</span>
-                    </div>
+                    <span className="td-score-val">{cumulativeScores[p.seat] ?? 0}</span>
                   </li>
                 );
               })}
             </ul>
-
-            {phase === "playing" && isMyTurn && (
-              <BtnPrimary fullWidth onClick={() => {}}>
-                <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M4 12l6 6L20 6" stroke="currentColor" strokeWidth="3" fill="none" strokeLinecap="round" />
-                </svg>
-                Your Turn
-              </BtnPrimary>
-            )}
           </aside>
 
-          {/* CENTER: Play surface */}
-          <section className="td-table-center t-felt">
-            {/* Phase banner */}
-            <div className="td-phase-banner">
-              <span className="td-phase-chip">
-                {phase === "bidding" && "Bidding Phase"}
-                {phase === "playing" && "Playing"}
-                {phase === "scoring" && "Scoring"}
-                {phase === "complete" && "Game Over"}
-              </span>
-              {phase === "playing" && (
-                <span className="td-phase-sub">
-                  {isMyTurn
-                    ? "Your turn — play a card from your hand"
-                    : `Awaiting ${players.find((p) => p.seat === currentSeat)?.name ?? "..."}`}
-                </span>
-              )}
-              {phase === "bidding" && (
-                <span className="td-phase-sub">
-                  {bidSubmitted ? `You bid ${myBid} — waiting for others...` : "Predict the tricks you will take"}
-                </span>
-              )}
-            </div>
-
-            {/* Trick pile */}
+          <section className="td-table-center t-felt td-felt" aria-label="Trick">
+            {gameMode === "digital" && phase === "bidding" && (
+              <div className="td-trick-prompt">
+                Count the tricks in your hand, then lock a bid.
+              </div>
+            )}
             {gameMode === "digital" && phase === "playing" && (
               <>
-                {lastTrickWinner !== null && trickCards.length === 0 && (
-                  <div className="flex justify-center mb-3">
-                    <span className="td-awaiting">
-                      {players.find((p) => p.seat === lastTrickWinner)?.name ?? "?"} won the trick!
-                    </span>
-                  </div>
-                )}
-                {trickCards.length > 0 && (
+                {trickCards.length > 0 ? (
                   <>
-                    <div className="td-trick-label">— The Trick —</div>
+                    <div className="td-trick-label">Trick {trickNumber}</div>
                     <div className="td-trick-pile">
                       {trickCards.map((tc, i) => {
                         const card = getCard(tc.cardId);
                         const playerName = players.find((p) => p.seat === tc.seat)?.name ?? "?";
-                        const rot = (i - Math.floor(trickCards.length / 2)) * 5;
+                        const rot = compactHand ? 0 : (i - Math.floor(trickCards.length / 2)) * 4;
                         return (
-                          <div
-                            key={i}
-                            className="td-trick-slot"
-                            style={{ "--r": `${rot}deg` } as React.CSSProperties}
-                          >
+                          <div key={`${tc.seat}-${tc.cardId}`} className="td-trick-slot" style={{ "--r": `${rot}deg` } as React.CSSProperties}>
                             <span className="td-stamp">{playerName}</span>
-                            <CardDisplay
-                              card={card}
-                              tigressChoice={tc.tigressChoice as any}
-                              rotation={rot}
-                              played
-                            />
+                            <CardDisplay card={card} tigressChoice={tc.tigressChoice as "escape" | "pirate" | undefined} rotation={rot} played />
                           </div>
                         );
                       })}
                     </div>
                   </>
-                )}
-                {trickCards.length === 0 && lastTrickWinner === null && (
-                  <div className="flex justify-center items-center" style={{ minHeight: "180px" }}>
-                    <span className="td-sc">Waiting for cards…</span>
+                ) : (
+                  <div className="td-trick-prompt">
+                    {lastTrickWinner !== null
+                      ? `${players.find((p) => p.seat === lastTrickWinner)?.name ?? "Someone"} took the trick`
+                      : isMyTurn
+                        ? "You lead this trick"
+                        : `${currentName} leads`}
                   </div>
                 )}
               </>
             )}
-
-            {/* Awaiting turn */}
-            {phase === "playing" && !isMyTurn && (
-              <div className="flex justify-center mt-4">
-                <span className="td-awaiting">
-                  Awaiting{" "}
-                  <em style={{ fontStyle: "italic", color: "var(--parchment)" }}>
-                    {players.find((p) => p.seat === currentSeat)?.name ?? "..."}
-                  </em>
-                </span>
+            {gameMode === "scorekeeper" && !iAmScorer && (
+              <div className="td-trick-prompt">
+                {phase === "bidding" ? "Waiting for the host to enter bids" : "Waiting for the host to enter results"}
               </div>
             )}
-
-            {/* Scorekeeper non-host waiting */}
-            {gameMode === "scorekeeper" && mySeat !== 0 && !isSingleScorer && (
-              <div className="flex justify-center items-center" style={{ minHeight: "200px" }}>
-                <span className="td-sc">
-                  {phase === "bidding"
-                    ? "Waiting for host to enter bids…"
-                    : "Waiting for host to enter round results…"}
-                </span>
+            {gameMode === "scorekeeper" && iAmScorer && (
+              <div className="td-trick-prompt">
+                {phase === "bidding" ? "Write every bid, then start the round." : "Enter tricks won and bonus captures."}
               </div>
             )}
           </section>
 
-          {/* RIGHT: Bid tracker or info */}
-          <aside className="td-scroll">
-            {gameMode === "digital" && phase === "bidding" && mySeat >= 0 && (
-              <>
-                <div className="td-scroll-header">
-                  <h2>Your Bid</h2>
-                  <div className="td-scroll-rule" />
-                </div>
-                <p className="td-sc mb-3" style={{ color: "var(--ink-soft)" }}>
-                  Predict the tricks you will take.
-                </p>
-                {!bidSubmitted ? (
-                  <>
-                    <div className="td-bid-grid-wrap">
-                      <div className="td-bid-grid">
-                        {Array.from({ length: round + 1 }, (_, i) => (
-                          <button
-                            key={i}
-                            onClick={() => handleBid(i)}
-                            className={`td-bid-chip ${myBid === i ? "td-selected" : ""}`}
-                          >
-                            {i}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="td-bid-flavor">"Your fate, sealed in ink…"</div>
-                  </>
-                ) : (
-                  <div className="td-bid-flavor">
-                    Bid locked: {myBid}<br />
-                    <span className="td-sc">Awaiting all pirates…</span>
-                  </div>
-                )}
-              </>
-            )}
-
-            {gameMode === "digital" && phase === "playing" && (
-              <>
-                <div className="td-scroll-header">
-                  <h2>This Round</h2>
-                  <div className="td-scroll-rule" />
-                </div>
-                {mySeat >= 0 && (
-                  <div style={{ borderTop: "1px dashed rgba(26,22,18,0.2)", borderBottom: "1px dashed rgba(26,22,18,0.2)", padding: "10px 0", display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                    <span className="font-serif font-semibold" style={{ color: "var(--ink)" }}>Tricks won</span>
-                    <span className="font-mono font-bold" style={{ fontSize: "20px", color: "var(--ink)" }}>
-                      {roundData[mySeat]?.won ?? 0} / {roundData[mySeat]?.bid ?? "–"}
-                    </span>
-                  </div>
-                )}
-              </>
-            )}
-
-            {/* Card reference accordion */}
-            {gameMode === "digital" && mySeat >= 0 && (
-              <CardInfoPanel />
-            )}
-
-            {/* Scorekeeper panel lives in right rail */}
-            {gameMode === "scorekeeper" && (mySeat === 0 || isSingleScorer) && (
-              <ScorekeeperPanel
-                phase={phase}
-                round={round}
-                maxPlayers={maxPlayers}
-                players={sortedPlayers}
-                bids={skBids}
-                won={skWon}
-                bonuses={skBonuses}
-                onBidChange={(seat, val) =>
-                  setSkBids((prev) => prev.map((b, i) => (i === seat ? val : b)))
-                }
-                onWonChange={(seat, val) =>
-                  setSkWon((prev) => prev.map((w, i) => (i === seat ? val : w)))
-                }
-                onBonusChange={(seat, key, val) =>
-                  setSkBonuses((prev) =>
-                    prev.map((b, i) => (i === seat ? { ...b, [key]: val } : b)),
-                  )
-                }
-                onSubmitBids={handleScorekeeperSubmitBids}
-                onSubmitResult={handleScorekeeperSubmitResult}
-              />
-            )}
-          </aside>
-
-          {/* BOTTOM: Hand */}
           {gameMode === "digital" && mySeat >= 0 && myHand.length > 0 && (
-            <div className="td-hand-row">
-              <div className="td-hand-panel">
+            <div className="td-hand-dock">
+              <div className={`td-hand-panel ${isMyTurn ? "td-hand-live" : ""}`}>
                 <div className="td-hand-head">
-                  <span className="td-hand-title">Your hand</span>
+                  <span className="td-hand-title">{isMyTurn ? "Your turn" : "Your hand"}</span>
                   <div className="td-hand-rule" />
-                  <span className="td-hand-count">{myHand.length} cards</span>
+                  <span className="td-hand-count">{myHand.length} {myHand.length === 1 ? "card" : "cards"}</span>
                 </div>
+                {isMyTurn && trickCards.length > 0 && (
+                  <p className="td-hand-hint">Dimmed cards don't follow suit.</p>
+                )}
                 <div className="td-hand">
                   {myHand.map((cardId, idx) => {
                     const card = getCard(cardId);
-                    const rot = (idx - Math.floor(myHand.length / 2)) * 3;
-                    const canPlay =
-                      isMyTurn && phase === "playing" && pendingPlayCardId === null;
+                    const rot = compactHand ? 0 : (idx - Math.floor(myHand.length / 2)) * 2;
+                    const check = validatePlayCard(
+                      cardId,
+                      myHand,
+                      trickCards.map((tc) => ({
+                        seat: tc.seat,
+                        cardId: tc.cardId,
+                        tigressChoice:
+                          tc.tigressChoice === "pirate" || tc.tigressChoice === "escape"
+                            ? tc.tigressChoice
+                            : undefined,
+                      })),
+                      card.type === "tigress" ? "escape" : undefined,
+                    );
+                    const legal = isMyTurn && pendingPlayCardId === null && check.valid;
+                    const label = card.name ?? (card.value ? `${card.value} of ${(card.suit ?? "").replace(/_/g, " ")}` : card.type);
                     return (
                       <button
                         key={cardId}
-                        onClick={() => canPlay && handlePlayCard(cardId)}
-                        disabled={!canPlay}
-                        style={{ background: "none", border: "none", padding: 0, cursor: canPlay ? "pointer" : "default" }}
-                        aria-label={`Play card ${card.name ?? card.type}`}
+                        type="button"
+                        className="td-card-hit"
+                        disabled={!isMyTurn || pendingPlayCardId !== null}
+                        aria-label={legal ? `Play ${label}` : `${label}. ${check.reason ?? "Not playable yet"}`}
+                        onClick={() => {
+                          if (!isMyTurn || pendingPlayCardId !== null) return;
+                          if (!check.valid) {
+                            toast.error(check.reason ?? "You can't play that card", { theme: "dark" });
+                            return;
+                          }
+                          handlePlayCard(cardId);
+                        }}
                       >
                         <CardDisplay
                           card={card}
                           rotation={rot}
-                          playable={canPlay}
+                          playable={legal}
+                          className={isMyTurn && !check.valid ? "td-unplayable" : ""}
                         />
                       </button>
                     );
@@ -1075,33 +1228,108 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
               </div>
             </div>
           )}
+
+          <aside className="td-scroll td-side" data-aside={asideKind}>
+            {asideKind === "bid" && (
+              <>
+                <div className="td-scroll-header">
+                  <h2>Your bid</h2>
+                  <div className="td-scroll-rule" />
+                </div>
+                {!bidSubmitted ? (
+                  <>
+                    <p className="font-sans text-sm mb-3" style={{ color: "var(--ink-soft)" }}>
+                      Choose a number, then lock it in. You can change it until you lock.
+                    </p>
+                    <div className="td-bid-grid" aria-label="Bid amount">
+                      {Array.from({ length: round + 1 }, (_, i) => (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => setPendingBid(i)}
+                          className={`td-bid-chip ${pendingBid === i ? "td-selected" : ""}`}
+                          aria-pressed={pendingBid === i}
+                        >
+                          {i}
+                        </button>
+                      ))}
+                    </div>
+                    <BtnPrimary fullWidth disabled={pendingBid === null} onClick={() => pendingBid !== null && handleBid(pendingBid)}>
+                      {pendingBid === null ? "Choose a bid" : `Lock in bid ${pendingBid}`}
+                    </BtnPrimary>
+                  </>
+                ) : (
+                  <p className="font-serif text-lg" style={{ color: "var(--ink)" }}>
+                    Bid locked at {myBid}.
+                    <span className="block font-sans text-sm mt-2" style={{ color: "var(--ink-soft)" }}>
+                      {othersWaiting.length ? `Still waiting on ${othersWaiting.join(", ")}.` : "Waiting for the rest of the crew."}
+                    </span>
+                  </p>
+                )}
+              </>
+            )}
+
+            {asideKind === "round" && mySeat >= 0 && (
+              <>
+                <div className="td-scroll-header">
+                  <h2>This round</h2>
+                  <div className="td-scroll-rule" />
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "8px 0" }}>
+                  <span className="font-serif font-semibold" style={{ color: "var(--ink)" }}>Tricks won</span>
+                  <span className="font-mono font-bold" style={{ fontSize: 22, color: "var(--ink)" }}>
+                    {roundData[mySeat]?.won ?? 0} / {roundData[mySeat]?.bid ?? "–"}
+                  </span>
+                </div>
+                <p className="font-sans text-sm" style={{ color: "var(--ink-soft)" }}>
+                  Hit your bid exactly. A zero bid pays {round * 10} if you take nothing.
+                </p>
+              </>
+            )}
+
+            {asideKind === "score" && (
+              <ScorekeeperPanel
+                phase={phase}
+                round={round}
+                maxPlayers={maxPlayers}
+                players={sortedPlayers}
+                bids={skBids}
+                won={skWon}
+                bonuses={skBonuses}
+                onBidChange={(seat, val) => setSkBids((prev) => prev.map((b, i) => (i === seat ? val : b)))}
+                onWonChange={(seat, val) => setSkWon((prev) => prev.map((w, i) => (i === seat ? val : w)))}
+                onBonusChange={(seat, key, val) =>
+                  setSkBonuses((prev) => prev.map((b, i) => (i === seat ? { ...b, [key]: val } : b)))
+                }
+                onSubmitBids={handleScorekeeperSubmitBids}
+                onSubmitResult={handleScorekeeperSubmitResult}
+              />
+            )}
+          </aside>
+
         </div>
       ) : (
-        /* ── LOBBY ── */
-        <div style={{ maxWidth: "600px", margin: "0 auto", paddingTop: "20px" }}>
-
-          {/* Single-scorer: host enters names */}
+        <div style={{ width: "min(560px, 100%)", margin: "8px auto 0" }}>
           {isSingleScorer && (mySeat === 0 || mySeat === -1) && (
             <div className="td-scroll">
               <div className="td-scroll-header">
-                <h2>Enter player names</h2>
+                <h2>Who's at the table?</h2>
                 <div className="td-scroll-rule" />
               </div>
-              <p className="font-sans text-xs mb-4" style={{ color: "var(--ink-soft)", opacity: 0.7 }}>
-                You'll score for everyone at the table
+              <p className="font-sans text-sm mb-4" style={{ color: "var(--ink-soft)" }}>
+                You'll enter bids and scores for everyone. At least two names.
               </p>
-              <div className="space-y-3 mb-5">
+              <div className="space-y-3 mb-2">
                 {Array.from({ length: maxPlayers }).map((_, i) => (
                   <div key={i}>
-                    <label className="td-input-label">Player {i + 1}</label>
+                    <label className="td-input-label" htmlFor={`seat-name-${i}`}>Player {i + 1}</label>
                     <input
+                      id={`seat-name-${i}`}
                       type="text"
                       placeholder={`Player ${i + 1}`}
                       value={singleScorerNames[i] ?? ""}
                       onChange={(e) =>
-                        setSingleScorerNames((prev) =>
-                          prev.map((n, idx) => (idx === i ? e.target.value : n)),
-                        )
+                        setSingleScorerNames((prev) => prev.map((n, idx) => (idx === i ? e.target.value : n)))
                       }
                       maxLength={20}
                       className="td-input"
@@ -1109,26 +1337,18 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
                   </div>
                 ))}
               </div>
-              <BtnPrimary
-                fullWidth
-                onClick={handleSingleScorerStart}
-                disabled={singleScorerNames.filter((n) => n.trim()).length < 2}
-              >
-                Start Scoring
+              <BtnPrimary fullWidth onClick={handleSingleScorerStart} disabled={singleScorerNames.filter((n) => n.trim()).length < 2}>
+                Start scoring
               </BtnPrimary>
             </div>
           )}
 
-          {/* Single-scorer: non-host waiting */}
           {isSingleScorer && mySeat > 0 && (
             <div className="td-scroll text-center">
-              <p className="font-sans text-sm" style={{ color: "var(--ink-soft)" }}>
-                Waiting for host to start the game…
-              </p>
+              <p className="font-serif text-lg" style={{ color: "var(--ink)" }}>Waiting for the host to start scoring.</p>
             </div>
           )}
 
-          {/* Distributed: players join */}
           {!isSingleScorer && (
             <div className="td-scroll">
               <div className="td-scroll-header">
@@ -1138,111 +1358,43 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
               <ul className="td-score-list mb-4">
                 {sortedPlayers.map((p) => (
                   <li key={p.seat} className="td-score-row">
-                    <div className="td-player-col">
-                      <span className="td-player-name" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                        <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "var(--forest)", display: "inline-block", flexShrink: 0 }} />
-                        {p.name}
-                        {p.seat === mySeat ? " (you)" : ""}
-                      </span>
-                    </div>
+                    <span className="td-player-name">
+                      {p.name}
+                      {p.seat === mySeat ? " (you)" : ""}
+                      {p.seat === 0 ? " · host" : ""}
+                    </span>
                   </li>
                 ))}
-                {Array.from({ length: maxPlayers - sortedPlayers.length }).map((_, i) => (
-                  <li key={i} className="td-score-row" style={{ opacity: 0.4 }}>
-                    <div className="td-player-col">
-                      <span className="td-player-name" style={{ display: "flex", alignItems: "center", gap: "8px", fontStyle: "italic" }}>
-                        <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "var(--parchment-edge)", display: "inline-block", flexShrink: 0, opacity: 0.4 }} />
-                        Waiting…
-                      </span>
-                    </div>
+                {Array.from({ length: Math.max(0, maxPlayers - sortedPlayers.length) }).map((_, i) => (
+                  <li key={`empty-${i}`} className="td-score-row" style={{ opacity: 0.55 }}>
+                    <span className="td-player-name" style={{ fontStyle: "italic" }}>Open seat</span>
                   </li>
                 ))}
               </ul>
-
-              <BtnSecondary fullWidth onClick={handleCopyLink} style={{ marginBottom: "12px" }}>
-                {copied ? "Copied!" : "Copy invite link"}
-              </BtnSecondary>
-
+              {shareFields("invite-lobby")}
               {mySeat === 0 && sortedPlayers.length >= 2 && (
                 <BtnPrimary fullWidth onClick={handleStartGame}>
-                  Start Game ({sortedPlayers.length} players)
+                  Start game ({sortedPlayers.length} players)
                 </BtnPrimary>
               )}
               {mySeat === 0 && sortedPlayers.length < 2 && (
-                <p className="font-sans text-sm text-center" style={{ color: "var(--ink-faint)" }}>
-                  Need at least 2 players to start
+                <p className="font-sans text-sm text-center mt-3" style={{ color: "var(--ink-soft)" }}>
+                  Need at least two pirates. Send the link, then start when they sit down.
+                </p>
+              )}
+              {mySeat !== 0 && (
+                <p className="font-sans text-sm text-center mt-4" style={{ color: "var(--ink-soft)" }}>
+                  Waiting for the host to start. You'll bid as soon as the cards are dealt.
                 </p>
               )}
             </div>
           )}
         </div>
       )}
-
-      {/* ── Chat ─── */}
-      <div className="fixed bottom-4 right-4 z-30">
-        {chatOpen && (
-          <div className="td-chat-panel mb-2">
-            <div style={{ maxHeight: "192px", overflowY: "auto" }} className="space-y-1 mb-2">
-              {chatMessages.slice(-20).map((m, i) => (
-                <p key={i} className="font-sans text-xs" style={{ color: "var(--ink-soft)" }}>
-                  <span className="font-semibold" style={{ color: "var(--gold-lo)" }}>{m.playerName}:</span>{" "}
-                  {m.text}
-                </p>
-              ))}
-              {chatMessages.length === 0 && (
-                <p className="font-sans text-xs italic" style={{ color: "var(--ink-faint)" }}>No messages yet</p>
-              )}
-            </div>
-            {mySeat >= 0 && (
-              <div className="flex gap-1" style={{ borderTop: "1px solid rgba(26,22,18,0.15)", paddingTop: "8px" }}>
-                <input
-                  type="text"
-                  value={chatInput}
-                  onChange={(e) => setChatInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && chatInput.trim()) {
-                      send({ type: "chat", text: chatInput.trim() });
-                      setChatInput("");
-                    }
-                  }}
-                  placeholder="Type a message…"
-                  maxLength={200}
-                  className="td-input flex-1 text-xs"
-                  style={{ fontSize: "12px" }}
-                />
-                <button
-                  onClick={() => {
-                    if (chatInput.trim()) {
-                      send({ type: "chat", text: chatInput.trim() });
-                      setChatInput("");
-                    }
-                  }}
-                  disabled={!chatInput.trim()}
-                  className="td-btn-primary"
-                  style={{ padding: "4px 10px", fontSize: "11px", marginTop: 0 }}
-                >
-                  Send
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-        <button
-          onClick={() => setChatOpen((v) => !v)}
-          className="td-btn-secondary"
-          style={{ marginTop: 0, padding: "6px 14px", fontSize: "12px" }}
-          aria-label="Toggle chat"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M4 4h16v12H4z" stroke="currentColor" strokeWidth="1.5" />
-            <path d="M4 16l4 4v-4" stroke="currentColor" strokeWidth="1.5" fill="none" />
-          </svg>
-          {chatMessages.length > 0 && !chatOpen ? ` ${chatMessages.length}` : ""}
-        </button>
-      </div>
     </div>
   );
 }
+
 
 // ─── CardDisplay ─────────────────────────────────────────────────────────────
 
@@ -1252,12 +1404,14 @@ function CardDisplay({
   rotation = 0,
   playable = false,
   played = false,
+  className = "",
 }: {
   card: Card;
   tigressChoice?: "escape" | "pirate";
   rotation?: number;
   playable?: boolean;
   played?: boolean;
+  className?: string;
 }) {
   // Map domain card types / suits to Tabledeck Card props
   const suitMap: Record<string, "parrot" | "chest" | "map" | "jolly"> = {
@@ -1279,6 +1433,7 @@ function CardDisplay({
         rotation={rotation}
         playable={playable}
         played={played}
+        className={className}
       />
     );
   }
@@ -1298,6 +1453,7 @@ function CardDisplay({
       rotation={rotation}
       playable={playable}
       played={played}
+      className={className}
     />
   );
 }
@@ -1305,19 +1461,9 @@ function CardDisplay({
 // ─── Card Info Panel ─────────────────────────────────────────────────────────
 
 function CardInfoPanel() {
-  const [open, setOpen] = useState(false);
   return (
-    <div style={{ marginTop: "14px" }}>
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="td-sc w-full flex items-center justify-between"
-        style={{ cursor: "pointer", background: "none", border: "none", padding: "8px 0", borderTop: "1px dashed rgba(26,22,18,0.2)" }}
-      >
-        <span>Card reference</span>
-        <span style={{ fontFamily: "var(--mono)", fontSize: "10px" }}>{open ? "▲" : "▼"}</span>
-      </button>
-      {open && (
-        <div className="font-sans text-xs space-y-3 pt-2" style={{ color: "var(--ink-soft)" }}>
+    <div>
+      <div className="font-sans text-xs space-y-3" style={{ color: "var(--ink-soft)" }}>
           <div>
             <p className="td-sc mb-2">Suits (1–14)</p>
             <div className="grid grid-cols-1 gap-1">
@@ -1342,8 +1488,7 @@ function CardInfoPanel() {
             <p className="td-sc mb-1">Tigress</p>
             <p>Choose when played: acts as Escape or Pirate.</p>
           </div>
-        </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -1466,7 +1611,6 @@ function ScorekeeperPanel({
                           onBonusChange(p.seat, key, Math.max(0, (bonuses[p.seat][key] ?? 0) - 1))
                         }
                         className="td-spinner-btn"
-                        style={{ width: "22px", height: "22px", fontSize: "12px" }}
                       >
                         −
                       </button>
@@ -1478,7 +1622,6 @@ function ScorekeeperPanel({
                           onBonusChange(p.seat, key, (bonuses[p.seat][key] ?? 0) + 1)
                         }
                         className="td-spinner-btn"
-                        style={{ width: "22px", height: "22px", fontSize: "12px" }}
                       >
                         +
                       </button>
